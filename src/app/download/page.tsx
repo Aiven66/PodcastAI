@@ -17,29 +17,31 @@ interface ReleaseAsset {
   version?: string
 }
 
-// 客户端下载配置（部署完成后由 Electron 构建产物填充实际 URL）
+// 客户端下载配置 - 指向 GitHub Release，确保稳定可下载
+const GITHUB_RELEASE_BASE = 'https://github.com/Aiven66/PodcastAI/releases/download/v1.0.0'
+
 const RELEASE_ASSETS: ReleaseAsset[] = [
   {
     name: 'PodcastAI-1.0.0-arm64-mac.zip',
     platform: 'mac',
     arch: 'arm64',
-    url: '/downloads/PodcastAI-1.0.0-arm64-mac.zip',
-    size: '约 95 MB',
+    url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.0-arm64-mac.zip`,
+    size: '约 91 MB',
     version: '1.0.0',
   },
   {
     name: 'PodcastAI-1.0.0-mac.zip',
     platform: 'mac',
     arch: 'x64',
-    url: '/downloads/PodcastAI-1.0.0-mac.zip',
-    size: '约 100 MB',
+    url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.0-mac.zip`,
+    size: '约 95 MB',
     version: '1.0.0',
   },
   {
     name: 'PodcastAI-win-x64.exe',
     platform: 'windows',
     arch: 'x64',
-    url: '/downloads/PodcastAI-win-x64.exe',
+    url: `${GITHUB_RELEASE_BASE}/PodcastAI-win-x64.exe`,
     size: '约 90 MB',
     version: '1.0.0',
   },
