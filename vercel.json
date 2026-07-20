@@ -1,0 +1,25 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "buildCommand": "pnpm next build",
+  "installCommand": "pnpm install --prefer-frozen-lockfile",
+  "devCommand": "pnpm dev",
+  "regions": ["hkg1"],
+  "functions": {
+    "src/app/api/podcast/tts/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/podcast/generate/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/voice/clone/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/voice/clone-preview/[cloneId]/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/voice/system-preview/[voiceId]/route.ts": {
+      "maxDuration": 60
+    }
+  }
+}

@@ -1,0 +1,54 @@
+# Python 语音服务（独立部署，不包含在 Vercel 中）
+voice-service/
+
+# Electron 桌面客户端代码（独立打包）
+electron/
+
+# 构建产物
+dist/
+.turbo/
+.cache/
+
+# 开发工具配置
+.vscode/
+.idea/
+
+# 文档与脚本说明
+*.md
+!README.md
+!AGENTS.md
+
+# 测试文件
+coverage/
+*.lcov
+.nyc_output
+
+# 环境变量（Vercel 使用自己的环境变量管理）
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# 大文件目录
+voice-service/venv/
+voice-service/CosyVoice/
+voice-service/voice-data/
+
+# 临时文件
+*.tmp
+*.temp
+.tmp/
+.temp/
+.preview-cache/
+public/voice-clones/
+
+# 桌面客户端安装包（体积过大，使用外部存储如 Cloudflare R2 托管）
+public/downloads/*.zip
+public/downloads/*.dmg
+public/downloads/*.exe
+public/downloads/*.blockmap
+public/downloads/mac/
+public/downloads/mac-arm64/
+public/downloads/win/
+public/downloads/win-x64/
