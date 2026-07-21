@@ -1,6 +1,6 @@
 {
   "name": "podcastai-desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "PodcastAI Desktop Client",
   "main": "dist/main.js",
   "scripts": {
@@ -21,9 +21,17 @@
       "dist/**/*",
       "package.json"
     ],
+    "afterPack": "./afterPack.js",
     "mac": {
       "category": "public.app-category.productivity",
       "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
         {
           "target": "zip",
           "arch": [
@@ -35,7 +43,9 @@
       "icon": "build/icon.icns",
       "identity": null,
       "gatekeeperAssess": false,
-      "hardenedRuntime": false
+      "hardenedRuntime": false,
+      "notarize": false,
+      "forceCodeSigning": false
     },
     "win": {
       "target": [
@@ -50,7 +60,8 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
     }
   },
   "devDependencies": {

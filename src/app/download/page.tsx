@@ -17,38 +17,41 @@ interface ReleaseAsset {
   version?: string
 }
 
-// 客户端下载配置 - 指向 GitHub Release，确保稳定可下载
-const GITHUB_RELEASE_BASE = 'https://github.com/Aiven66/PodcastAI/releases/download/v1.0.0'
+// 客户端下载配置 - 指向 GitHub Release v1.0.1，确保稳定可下载
+const GITHUB_RELEASE_BASE = 'https://github.com/Aiven66/PodcastAI/releases/download/v1.0.1'
 
 const RELEASE_ASSETS: ReleaseAsset[] = [
+  // macOS Apple Silicon (M1/M2/M3/M4) - 优先 DMG 格式
   {
-    name: 'PodcastAI-1.0.0-arm64-mac.zip',
+    name: 'PodcastAI-1.0.1-arm64.dmg',
     platform: 'mac',
     arch: 'arm64',
-    url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.0-arm64-mac.zip`,
-    size: '约 91 MB',
-    version: '1.0.0',
+    url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.1-arm64.dmg`,
+    size: '约 93 MB',
+    version: '1.0.1',
   },
+  // macOS Intel (x64) - DMG 格式
   {
-    name: 'PodcastAI-1.0.0-mac.zip',
+    name: 'PodcastAI-1.0.1.dmg',
     platform: 'mac',
     arch: 'x64',
-    url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.0-mac.zip`,
-    size: '约 95 MB',
-    version: '1.0.0',
+    url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.1.dmg`,
+    size: '约 100 MB',
+    version: '1.0.1',
   },
+  // Windows x64 - NSIS 安装包（GitHub 上传时空格会被替换为点号）
   {
-    name: 'PodcastAI-win-x64.exe',
+    name: 'PodcastAI.Setup.1.0.1.exe',
     platform: 'windows',
     arch: 'x64',
-    url: `${GITHUB_RELEASE_BASE}/PodcastAI-win-x64.exe`,
-    size: '约 90 MB',
-    version: '1.0.0',
+    url: `${GITHUB_RELEASE_BASE}/PodcastAI.Setup.1.0.1.exe`,
+    size: '约 78 MB',
+    version: '1.0.1',
   },
 ]
 
-// Windows 客户端暂未发布（需要在 Windows 机器上构建）
-const WINDOWS_AVAILABLE = false
+// Windows 客户端已发布
+const WINDOWS_AVAILABLE = true
 
 export default function DownloadPage() {
   const { locale } = useLocale()
@@ -269,11 +272,21 @@ export default function DownloadPage() {
                 <Apple className="h-4 w-4" /> macOS
               </h4>
               <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
-                <li>{t('Download the .zip file for your Mac architecture', '下载适合您 Mac 架构的 .zip 文件')}</li>
-                <li>{t('Double-click to extract, drag PodcastAI to Applications', '双击解压，将 PodcastAI 拖到应用程序文件夹')}</li>
-                <li>{t('First launch: right-click → Open (to bypass Gatekeeper)', '首次启动：右键 → 打开（绕过 Gatekeeper）')}</li>
+                <li>{t('Download the .dmg file for your Mac architecture', '下载适合您 Mac 架构的 .dmg 文件')}</li>
+                <li>{t('Double-click to open DMG, drag PodcastAI to Applications', '双击打开 DMG，将 PodcastAI 拖到应用程序文件夹')}</li>
+                <li>{t('Open Applications folder, right-click PodcastAI → Open', '打开应用程序文件夹，右键点击 PodcastAI → 选择「打开」')}</li>
+                <li>{t('Click "Open" in the dialog (first launch only)', '在弹出的对话框中点击「打开」（仅首次启动需要）')}</li>
                 <li>{t('Sign in with your account or use desktop verification', '使用账号登录或桌面客户端验证')}</li>
               </ol>
+              <Alert className="mt-3">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription className="text-xs">
+                  {t(
+                    'If macOS says "app is damaged": open Terminal and run xattr -cr /Applications/PodcastAI.app',
+                    '如果 macOS 提示「应用已损坏」：打开终端运行 xattr -cr /Applications/PodcastAI.app'
+                  )}
+                </AlertDescription>
+              </Alert>
             </div>
             <div>
               <h4 className="font-medium mb-2 flex items-center gap-2">

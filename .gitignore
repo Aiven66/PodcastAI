@@ -167,14 +167,9 @@ voice-service/voice-data/
 .preview-cache/
 public/voice-clones/
 public/podcasts/
-public/downloads/*.zip
-public/downloads/*.dmg
-public/downloads/*.exe
-public/downloads/*.blockmap
-public/downloads/mac/
-public/downloads/mac-arm64/
-public/downloads/win/
-public/downloads/win-x64/
+# Electron 构建产物（安装包通过 GitHub Release 分发，不进 git）
+public/downloads/*
+!public/downloads/.gitkeep
 
 # TypeScript build info
 tsconfig.tsbuildinfo
