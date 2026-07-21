@@ -1,0 +1,358 @@
+/**
+ * PodcastAI Desktop - i18n 国际化翻译
+ * 支持中文（zh）和英文（en）
+ */
+
+export type Locale = 'zh' | 'en'
+
+export const translations = {
+  zh: {
+    // 通用
+    appName: 'PodcastAI',
+    loading: '加载中...',
+    error: '错误',
+    success: '成功',
+    cancel: '取消',
+    confirm: '确认',
+    save: '保存',
+    delete: '删除',
+    close: '关闭',
+    play: '播放',
+    pause: '暂停',
+    download: '下载',
+    regenerate: '重新生成',
+    language: '语言',
+    chinese: '中文',
+    english: 'English',
+
+    // 导航
+    navPodcast: '播客生成',
+    navClone: '声音克隆',
+    navHistory: '历史记录',
+    navSettings: '设置',
+
+    // 服务状态
+    serviceStatus: '语音服务状态',
+    serviceOnline: '在线',
+    serviceOffline: '离线',
+    serviceBusy: '合成中',
+    serviceCheckFailed: '检测失败',
+    serviceUrl: '服务地址',
+    serviceHint: '请启动本地 Python 语音服务 (默认端口 8907)',
+
+    // 播客生成
+    podcastTitle: '播客生成',
+    podcastSubtitle: '将链接、文本或文件转换为高质量播客',
+    inputMethod: '输入方式',
+    inputUrl: '链接输入',
+    inputText: '文本输入',
+    inputFile: '文件上传',
+    urlLabel: '文章链接',
+    urlPlaceholder: '粘贴文章 URL（例如微信公众号文章链接）',
+    textLabel: '文本内容',
+    textPlaceholder: '输入或粘贴要转换为播客的文本内容...',
+    fileLabel: '上传文件',
+    fileDropHint: '点击或拖拽文件到此处',
+    fileSupported: '支持 PDF、Word、Markdown、TXT 等格式',
+    fileSelected: '已选择文件',
+    fileChange: '更换文件',
+
+    // 播客选项
+    podcastOptions: '播客选项',
+    podcastType: '播客类型',
+    singleHost: '单人主持',
+    dualHost: '双人访谈',
+    voiceSelect: '声音选择',
+    voiceHost: '主持人声音',
+    voiceGuest: '嘉宾声音',
+    systemVoice: '系统声音',
+    cloneVoice: '克隆声音',
+    voiceFemale: '女声',
+    voiceMale: '男声',
+    noCloneAvailable: '尚未创建克隆声音，请先到「声音克隆」页面创建',
+
+    // 生成按钮
+    generate: '生成播客',
+    generating: '生成中',
+    generateProgress: '生成进度',
+    scriptGenerating: '正在生成脚本...',
+    audioSynthesizing: '正在合成音频...',
+    segmentProgress: '正在合成第 {current}/{total} 段',
+
+    // 脚本预览
+    scriptPreview: '脚本预览',
+    scriptEditHint: '生成后可编辑脚本，再合成音频',
+
+    // 播放器
+    audioPlayer: '音频播放器',
+    noAudio: '暂无音频',
+    duration: '时长',
+
+    // 声音克隆
+    cloneTitle: '声音克隆',
+    cloneSubtitle: '使用 CosyVoice2 模型克隆您的声音',
+    cloneName: '克隆名称',
+    cloneNamePlaceholder: '给您的克隆声音起个名字',
+    cloneGender: '性别',
+    cloneGenderAuto: '自动检测',
+    cloneGenderMale: '男',
+    cloneGenderFemale: '女',
+    cloneDescription: '描述（可选）',
+    cloneDescriptionPlaceholder: '例如：温柔女声、磁性男声',
+    clonePromptText: '参考文本（可选，提升相似度）',
+    clonePromptPlaceholder: '上传音频对应的文字内容（5-30 秒）',
+    cloneAudioFile: '参考音频',
+    cloneAudioHint: '上传 5-30 秒清晰的人声音频（wav/mp3/m4a）',
+    cloneAudioSelected: '已选择音频',
+    startClone: '开始克隆',
+    cloning: '克隆中',
+    cloneSuccess: '克隆成功',
+    cloneFailed: '克隆失败',
+
+    // 克隆列表
+    cloneListTitle: '我的克隆声音',
+    cloneEmpty: '还没有克隆声音',
+    clonePreview: '试听',
+    clonePreviewLoading: '加载中',
+    cloneDelete: '删除',
+    cloneDeleteConfirm: '确定删除此克隆声音？',
+    cloneCreatedAt: '创建于',
+
+    // 历史记录
+    historyTitle: '历史记录',
+    historyEmpty: '还没有生成过播客',
+    historyCreatedAt: '创建于',
+    historyDuration: '时长',
+    historyScript: '脚本',
+    historyPlay: '播放',
+    historyDownload: '下载',
+    historyDelete: '删除',
+    historyDeleteConfirm: '确定删除此历史记录？',
+    historyClearAll: '清空全部',
+    historyClearAllConfirm: '确定清空全部历史记录？此操作不可撤销',
+
+    // 设置
+    settingsTitle: '设置',
+    settingsLanguage: '界面语言',
+    settingsService: '语音服务',
+    settingsServiceUrl: '服务地址',
+    settingsServiceUrlPlaceholder: 'http://localhost:8907',
+    settingsServiceTimeout: '请求超时（秒）',
+    settingsSave: '保存设置',
+    settingsSaved: '设置已保存',
+    settingsReset: '恢复默认',
+    settingsAbout: '关于',
+    settingsVersion: '版本',
+    settingsPlatform: '平台',
+    settingsArchitecture: '架构',
+
+    // 错误
+    errServiceUnavailable: '语音服务不可用，请检查服务是否启动',
+    errCloneFailed: '声音克隆失败，请重试',
+    errSynthFailed: '音频合成失败，请重试',
+    errScriptFailed: '脚本生成失败，请重试',
+    errFileReadFailed: '文件读取失败',
+    errInvalidUrl: '请输入有效的 URL',
+    errEmptyText: '请输入文本内容',
+    errNoFile: '请选择文件',
+    errNoCloneName: '请输入克隆名称',
+    errNoCloneAudio: '请选择参考音频',
+    errNetwork: '网络错误，请检查服务是否运行',
+    errTimeout: '请求超时',
+    errCloneBusy: '语音合成服务正忙，请等待当前任务完成',
+
+    // 系统声音名称（与 web 端保持一致）
+    voices: {
+      'female-professional': 'Sarah 晓晓（专业女主播）',
+      'female-friendly': 'Emma 晓伊（友好亲切）',
+      'female-northeast': 'Beibei 小北（东北话）',
+      'female-shaanxi': 'Nini 小妮（陕西话）',
+      'male-narrator': 'David 云希（经典叙述）',
+      'male-deep': 'James 云健（低沉磁性）',
+      'male-sunny': 'Tom 云扬（阳光活力）',
+      'male-youth': 'Leo 云夏（青春少年）',
+      'en-female-jenny': 'Jenny (US English)',
+      'en-female-ariana': 'Aria (US English)',
+      'en-female-sarah': 'Sarah (UK English)',
+      'en-male-guy': 'Guy (US English)',
+      'en-male-ryan': 'Ryan (US English)',
+      'en-male-james': 'James (UK English)',
+    },
+  },
+
+  en: {
+    // General
+    appName: 'PodcastAI',
+    loading: 'Loading...',
+    error: 'Error',
+    success: 'Success',
+    cancel: 'Cancel',
+    confirm: 'Confirm',
+    save: 'Save',
+    delete: 'Delete',
+    close: 'Close',
+    play: 'Play',
+    pause: 'Pause',
+    download: 'Download',
+    regenerate: 'Regenerate',
+    language: 'Language',
+    chinese: '中文',
+    english: 'English',
+
+    // Navigation
+    navPodcast: 'Podcast',
+    navClone: 'Voice Clone',
+    navHistory: 'History',
+    navSettings: 'Settings',
+
+    // Service status
+    serviceStatus: 'Voice Service',
+    serviceOnline: 'Online',
+    serviceOffline: 'Offline',
+    serviceBusy: 'Busy',
+    serviceCheckFailed: 'Check Failed',
+    serviceUrl: 'Service URL',
+    serviceHint: 'Please start the local Python voice service (default port 8907)',
+
+    // Podcast generation
+    podcastTitle: 'Generate Podcast',
+    podcastSubtitle: 'Convert URLs, text, or files into high-quality podcasts',
+    inputMethod: 'Input Method',
+    inputUrl: 'URL Input',
+    inputText: 'Text Input',
+    inputFile: 'File Upload',
+    urlLabel: 'Article URL',
+    urlPlaceholder: 'Paste article URL (e.g. blog post URL)',
+    textLabel: 'Text Content',
+    textPlaceholder: 'Enter or paste text content to convert to podcast...',
+    fileLabel: 'Upload File',
+    fileDropHint: 'Click or drag file here',
+    fileSupported: 'Supports PDF, Word, Markdown, TXT formats',
+    fileSelected: 'File selected',
+    fileChange: 'Change file',
+
+    // Podcast options
+    podcastOptions: 'Podcast Options',
+    podcastType: 'Podcast Type',
+    singleHost: 'Single Host',
+    dualHost: 'Dual Host (Interview)',
+    voiceSelect: 'Voice Selection',
+    voiceHost: 'Host Voice',
+    voiceGuest: 'Guest Voice',
+    systemVoice: 'System Voice',
+    cloneVoice: 'Cloned Voice',
+    voiceFemale: 'Female',
+    voiceMale: 'Male',
+    noCloneAvailable: 'No cloned voices yet. Please create one in the "Voice Clone" tab first',
+
+    // Generate button
+    generate: 'Generate Podcast',
+    generating: 'Generating',
+    generateProgress: 'Progress',
+    scriptGenerating: 'Generating script...',
+    audioSynthesizing: 'Synthesizing audio...',
+    segmentProgress: 'Synthesizing segment {current}/{total}',
+
+    // Script preview
+    scriptPreview: 'Script Preview',
+    scriptEditHint: 'Edit the script after generation, then synthesize audio',
+
+    // Player
+    audioPlayer: 'Audio Player',
+    noAudio: 'No audio yet',
+    duration: 'Duration',
+
+    // Voice cloning
+    cloneTitle: 'Voice Cloning',
+    cloneSubtitle: 'Clone your voice with CosyVoice2 model',
+    cloneName: 'Clone Name',
+    cloneNamePlaceholder: 'Give your cloned voice a name',
+    cloneGender: 'Gender',
+    cloneGenderAuto: 'Auto Detect',
+    cloneGenderMale: 'Male',
+    cloneGenderFemale: 'Female',
+    cloneDescription: 'Description (optional)',
+    cloneDescriptionPlaceholder: 'e.g. warm female, deep male',
+    clonePromptText: 'Reference Text (optional, improves similarity)',
+    clonePromptPlaceholder: 'Transcript of the audio (5-30 seconds)',
+    cloneAudioFile: 'Reference Audio',
+    cloneAudioHint: 'Upload 5-30 seconds of clear speech (wav/mp3/m4a)',
+    cloneAudioSelected: 'Audio selected',
+    startClone: 'Start Cloning',
+    cloning: 'Cloning',
+    cloneSuccess: 'Clone created successfully',
+    cloneFailed: 'Clone failed',
+
+    // Clone list
+    cloneListTitle: 'My Cloned Voices',
+    cloneEmpty: 'No cloned voices yet',
+    clonePreview: 'Preview',
+    clonePreviewLoading: 'Loading',
+    cloneDelete: 'Delete',
+    cloneDeleteConfirm: 'Delete this cloned voice?',
+    cloneCreatedAt: 'Created at',
+
+    // History
+    historyTitle: 'History',
+    historyEmpty: 'No podcasts generated yet',
+    historyCreatedAt: 'Created at',
+    historyDuration: 'Duration',
+    historyScript: 'Script',
+    historyPlay: 'Play',
+    historyDownload: 'Download',
+    historyDelete: 'Delete',
+    historyDeleteConfirm: 'Delete this history record?',
+    historyClearAll: 'Clear All',
+    historyClearAllConfirm: 'Clear all history? This cannot be undone',
+
+    // Settings
+    settingsTitle: 'Settings',
+    settingsLanguage: 'Interface Language',
+    settingsService: 'Voice Service',
+    settingsServiceUrl: 'Service URL',
+    settingsServiceUrlPlaceholder: 'http://localhost:8907',
+    settingsServiceTimeout: 'Request Timeout (seconds)',
+    settingsSave: 'Save Settings',
+    settingsSaved: 'Settings saved',
+    settingsReset: 'Reset to Default',
+    settingsAbout: 'About',
+    settingsVersion: 'Version',
+    settingsPlatform: 'Platform',
+    settingsArchitecture: 'Architecture',
+
+    // Errors
+    errServiceUnavailable: 'Voice service unavailable. Please check if the service is running',
+    errCloneFailed: 'Voice clone failed. Please try again',
+    errSynthFailed: 'Audio synthesis failed. Please try again',
+    errScriptFailed: 'Script generation failed. Please try again',
+    errFileReadFailed: 'File read failed',
+    errInvalidUrl: 'Please enter a valid URL',
+    errEmptyText: 'Please enter text content',
+    errNoFile: 'Please select a file',
+    errNoCloneName: 'Please enter a clone name',
+    errNoCloneAudio: 'Please select a reference audio',
+    errNetwork: 'Network error. Please check if the service is running',
+    errTimeout: 'Request timeout',
+    errCloneBusy: 'Voice synthesis service is busy. Please wait for the current task to finish',
+
+    // System voice names
+    voices: {
+      'female-professional': 'Sarah (Professional Female Host)',
+      'female-friendly': 'Emma (Friendly & Warm)',
+      'female-northeast': 'Beibei (Northeast Dialect)',
+      'female-shaanxi': 'Nini (Shaanxi Dialect)',
+      'male-narrator': 'David (Classic Narration)',
+      'male-deep': 'James (Deep & Magnetic)',
+      'male-sunny': 'Tom (Sunny & Energetic)',
+      'male-youth': 'Leo (Youthful Boy)',
+      'en-female-jenny': 'Jenny (US English)',
+      'en-female-ariana': 'Aria (US English)',
+      'en-female-sarah': 'Sarah (UK English)',
+      'en-male-guy': 'Guy (US English)',
+      'en-male-ryan': 'Ryan (US English)',
+      'en-male-james': 'James (UK English)',
+    },
+  },
+} as const
+
+export type TranslationKey = keyof typeof translations.zh

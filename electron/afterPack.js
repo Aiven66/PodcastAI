@@ -26,10 +26,15 @@ exports.default = async function afterPack(context) {
   console.log(`\n[afterPack] Ad-hoc signing (deep): ${appPath}`)
 
   try {
-    // 1. 清除已有的 quarantine 属性（如果有的话）
-    execSync(`xattr -cr "${appPath}"`, { stdio: 'inherit' })
+    // 1. 删除 .app 内所有 AppleDouble 文件（._*）和 .DS_Store
+    // 这些文件携带 resource fork，codesign 会拒绝
+    execSync(`find "${appPath}" -name '._*' -delete 2>/dev/null || true`, { stdio: 'inherit' })
+    execSync(`find "${appPath}" -name '.DS_Store' -delete 2>/dev/null || true`, { stdio: 'inherit' })
 
-    // 2. 对整个 .app bundle 做 deep ad-hoc 签名
+    // 2. 递归清除所有扩展属性（resource fork、Finder 信息、quarantine 等）
+    execSync(`xattr -cr "${appPath}" 2>/dev/null || true`, { stdio: 'inherit' })
+
+    // 3. 对整个 .app bundle 做 deep ad-hoc 签名
     // --force: 覆盖已有签名
     // --deep: 递归签名所有嵌套的 Mach-O 文件（.dylib, framework, helper apps）
     // --sign -: ad-hoc 签名（无需开发者证书）
@@ -37,14 +42,14 @@ exports.default = async function afterPack(context) {
       stdio: 'inherit',
     })
 
-    // 3. 验证签名
+    // 4. 验证签名
     console.log('[afterPack] Verifying signature...')
     const verifyResult = execSync(
       `codesign --verify --verbose=2 "${appPath}" 2>&1 || true`
     ).toString()
     console.log(verifyResult)
 
-    // 4. 显示签名详情
+    // 5. 显示签名详情
     const displayResult = execSync(
       `codesign -dv --verbose=2 "${appPath}" 2>&1 || true`
     ).toString()

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' https: data: blob:; media-src 'self' https: blob: data:;">
+  <title>PodcastAI</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            primary: { 50: '#f5f3ff', 500: '#8b5cf6', 600: '#7c3aed', 700: '#6d28d9' },
+          },
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'sans-serif'],
+          },
+        },
+      },
+    }
+  </script>
+  <style>
+    * { -webkit-font-smoothing: antialiased; }
+    body { background: #0a0a0a; color: #fafafa; overflow: hidden; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+    .app-drag { -webkit-app-region: drag; }
+    .app-no-drag { -webkit-app-region: no-drag; }
+    .toast-enter { animation: toastIn 0.3s ease-out; }
+    @keyframes toastIn { from { transform: translateY(-20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+    .pulse-dot { animation: pulse 2s ease-in-out infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    .wave { display: inline-block; width: 3px; height: 14px; margin: 0 1px; background: currentColor; border-radius: 2px; animation: wave 1.2s ease-in-out infinite; }
+    @keyframes wave { 0%, 100% { height: 6px; } 50% { height: 16px; } }
+  </style>
+</head>
+<body>
+  <div id="app" class="flex h-screen"></div>
+
+  <!-- Toast container -->
+  <div id="toast-container" class="fixed top-4 right-4 z-50 space-y-2 pointer-events-none"></div>
+
+  <!-- Audio element (reused) -->
+  <audio id="hidden-audio" class="hidden"></audio>
+
+  <script>
+    // 引用全局对象
+    window.__podcastai = {
+      state: {
+        locale: 'zh',
+        serviceUrl: 'http://localhost:8907',
+        serviceTimeout: 60,
+        serviceStatus: 'unknown',
+        activeView: 'podcast',
+        inputMethod: 'url',
+        podcastType: 'single',
+        voice1: 'female-professional',
+        voice2: 'male-narrator',
+        clones: [],
+        history: [],
+        isGenerating: false,
+        isCloning: false,
+        currentPodcast: null,
+        progress: { current: 0, total: 0, stage: '' },
+        scriptText: '',
+        audioUrl: null,
+      },
+    }
+  </script>
+
+  <!-- Main app script (bundled) -->
+  <script src="./renderer.js"></script>
+</body>
+</html>

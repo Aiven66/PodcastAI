@@ -1,14 +1,14 @@
 {
   "name": "podcastai-desktop",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "description": "PodcastAI Desktop Client",
   "main": "dist/main.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "dev": "tsc -p tsconfig.json && electron .",
-    "pack:mac": "electron-builder --mac --arm64 --x64",
-    "pack:win": "electron-builder --win --x64",
-    "pack:all": "electron-builder --mac --arm64 --x64 && electron-builder --win --x64"
+    "build": "tsc -p tsconfig.json && node copy-assets.js",
+    "dev": "tsc -p tsconfig.json && node copy-assets.js && electron .",
+    "pack:mac": "tsc -p tsconfig.json && node copy-assets.js && electron-builder --mac --arm64 --x64",
+    "pack:win": "tsc -p tsconfig.json && node copy-assets.js && electron-builder --win --x64",
+    "pack:all": "tsc -p tsconfig.json && node copy-assets.js && electron-builder --mac --arm64 --x64 && electron-builder --win --x64"
   },
   "build": {
     "appId": "com.podcastai.desktop",

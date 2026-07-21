@@ -17,36 +17,36 @@ interface ReleaseAsset {
   version?: string
 }
 
-// 客户端下载配置 - 指向 GitHub Release v1.0.1，确保稳定可下载
-const GITHUB_RELEASE_BASE = 'https://github.com/Aiven66/PodcastAI/releases/download/v1.0.1'
+// 客户端下载配置 - 指向 GitHub Release v1.0.3，确保稳定可下载
+const GITHUB_RELEASE_BASE = 'https://github.com/Aiven66/PodcastAI/releases/download/v1.0.3'
 
 const RELEASE_ASSETS: ReleaseAsset[] = [
   // macOS Apple Silicon (M1/M2/M3/M4) - 优先 DMG 格式
   {
-    name: 'PodcastAI-1.0.1-arm64.dmg',
+    name: 'PodcastAI-1.0.3-arm64.dmg',
     platform: 'mac',
     arch: 'arm64',
-    url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.1-arm64.dmg`,
+    url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.3-arm64.dmg`,
     size: '约 93 MB',
-    version: '1.0.1',
+    version: '1.0.3',
   },
   // macOS Intel (x64) - DMG 格式
   {
-    name: 'PodcastAI-1.0.1.dmg',
+    name: 'PodcastAI-1.0.3.dmg',
     platform: 'mac',
     arch: 'x64',
-    url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.1.dmg`,
+    url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.3.dmg`,
     size: '约 100 MB',
-    version: '1.0.1',
+    version: '1.0.3',
   },
   // Windows x64 - NSIS 安装包（GitHub 上传时空格会被替换为点号）
   {
-    name: 'PodcastAI.Setup.1.0.1.exe',
+    name: 'PodcastAI.Setup.1.0.3.exe',
     platform: 'windows',
     arch: 'x64',
-    url: `${GITHUB_RELEASE_BASE}/PodcastAI.Setup.1.0.1.exe`,
+    url: `${GITHUB_RELEASE_BASE}/PodcastAI.Setup.1.0.3.exe`,
     size: '约 78 MB',
-    version: '1.0.1',
+    version: '1.0.3',
   },
 ]
 
@@ -223,6 +223,51 @@ export default function DownloadPage() {
             </CardContent>
           </Card>
         </div>
+
+        {/* What's New in v1.0.3 */}
+        <Card className="mb-10 border-primary/40 bg-primary/5">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <Badge variant="default">v1.0.3</Badge>
+                  {t('What\'s New', '最新更新')}
+                </CardTitle>
+                <CardDescription className="mt-1">
+                  {t('Built-in voice service manager - resolve offline cloning issues', '内置语音服务管理器，解决离线声音克隆问题')}
+                </CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <ul className="grid md:grid-cols-2 gap-x-6 gap-y-2 text-sm">
+              <li className="flex items-start gap-2">
+                <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                <span>{t('Built-in Python voice service manager with one-click start/stop', '内置 Python 语音服务管理器，一键启动/停止')}</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                <span>{t('Auto-detect Python 3.10+ and voice-service environment', '自动检测 Python 3.10+ 和 voice-service 环境')}</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                <span>{t('Real-time service logs for troubleshooting', '实时服务日志，方便排查启动问题')}</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                <span>{t('Optional auto-start service on app launch', '可选应用启动时自动启动服务')}</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                <span>{t('6-step setup wizard for first-time configuration', '6 步设置向导，首次使用更友好')}</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                <span>{t('Offline banner with quick-start shortcut', '离线 banner 提示，一键跳转启动服务')}</span>
+              </li>
+            </ul>
+          </CardContent>
+        </Card>
 
         {/* Features */}
         <div className="grid md:grid-cols-3 gap-4 mb-12">
