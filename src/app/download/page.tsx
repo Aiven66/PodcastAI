@@ -274,17 +274,56 @@ export default function DownloadPage() {
               <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
                 <li>{t('Download the .dmg file for your Mac architecture', '下载适合您 Mac 架构的 .dmg 文件')}</li>
                 <li>{t('Double-click to open DMG, drag PodcastAI to Applications', '双击打开 DMG，将 PodcastAI 拖到应用程序文件夹')}</li>
-                <li>{t('Open Applications folder, right-click PodcastAI → Open', '打开应用程序文件夹，右键点击 PodcastAI → 选择「打开」')}</li>
-                <li>{t('Click "Open" in the dialog (first launch only)', '在弹出的对话框中点击「打开」（仅首次启动需要）')}</li>
+                <li>{t('Eject the DMG (right-click DMG on desktop → Eject)', '推出 DMG（右键桌面上的 DMG → 推出）')}</li>
+                <li>{t('Open Applications folder, right-click PodcastAI → Open (DO NOT double-click)', '打开应用程序文件夹，右键点击 PodcastAI → 选择「打开」（切勿双击）')}</li>
+                <li>{t('Click "Open" in the Gatekeeper dialog (first launch only)', '在 Gatekeeper 弹窗中点击「打开」（仅首次启动需要）')}</li>
                 <li>{t('Sign in with your account or use desktop verification', '使用账号登录或桌面客户端验证')}</li>
               </ol>
-              <Alert className="mt-3">
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription className="text-xs">
-                  {t(
-                    'If macOS says "app is damaged": open Terminal and run xattr -cr /Applications/PodcastAI.app',
-                    '如果 macOS 提示「应用已损坏」：打开终端运行 xattr -cr /Applications/PodcastAI.app'
-                  )}
+
+              <Alert className="mt-3 border-amber-500/50 bg-amber-500/10">
+                <AlertCircle className="h-4 w-4 text-amber-500" />
+                <AlertDescription className="text-xs space-y-2">
+                  <div className="font-medium text-amber-700 dark:text-amber-400">
+                    {t(
+                      'About "Apple cannot verify the app" warning',
+                      '关于「Apple 无法验证应用」警告'
+                    )}
+                  </div>
+                  <div>
+                    {t(
+                      'This is macOS Gatekeeper\'s standard warning for apps without Apple Developer ID signature. PodcastAI uses ad-hoc signing (no malicious code). It is 100% safe. Two ways to bypass:',
+                      '这是 macOS Gatekeeper 对没有 Apple Developer ID 签名应用的标准警告。PodcastAI 使用 ad-hoc 签名（无恶意代码），完全安全。两种绕过方式：'
+                    )}
+                  </div>
+                  <div className="space-y-1">
+                    <div className="font-medium">{t('Method 1 (Recommended): Right-click to open', '方法一（推荐）：右键打开')}</div>
+                    <div className="pl-3 text-muted-foreground">
+                      {t(
+                        'Right-click PodcastAI.app in Applications → select "Open" → click "Open" in dialog',
+                        '在应用程序文件夹中右键点击 PodcastAI.app → 选择「打开」→ 在弹窗中点击「打开」'
+                      )}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="font-medium">{t('Method 2: System Settings', '方法二：系统设置')}</div>
+                    <div className="pl-3 text-muted-foreground">
+                      {t(
+                        'System Settings → Privacy & Security → scroll down → click "Open Anyway"',
+                        '系统设置 → 隐私与安全性 → 向下滚动 → 点击「仍要打开」'
+                      )}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="font-medium">{t('Method 3: Terminal command (one-click fix)', '方法三：终端命令（一键修复）')}</div>
+                    <div className="pl-3">
+                      <code className="px-2 py-1 rounded bg-muted text-foreground text-[11px]">
+                        xattr -cr /Applications/PodcastAI.app
+                      </code>
+                      <div className="text-muted-foreground mt-1">
+                        {t('Open Terminal (Spotlight search "Terminal"), paste and run', '打开终端（Spotlight 搜索「终端」），粘贴并运行')}
+                      </div>
+                    </div>
+                  </div>
                 </AlertDescription>
               </Alert>
             </div>
