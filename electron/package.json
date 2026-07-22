@@ -1,14 +1,15 @@
 {
   "name": "podcastai-desktop",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "PodcastAI Desktop Client",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.json && node copy-assets.js",
     "dev": "tsc -p tsconfig.json && node copy-assets.js && electron .",
-    "pack:mac": "tsc -p tsconfig.json && node copy-assets.js && electron-builder --mac --arm64 --x64",
+    "pack:mac": "tsc -p tsconfig.json && node copy-assets.js && electron-builder --mac",
+    "pack:mac:arm64": "tsc -p tsconfig.json && node copy-assets.js && electron-builder --mac --arm64",
     "pack:win": "tsc -p tsconfig.json && node copy-assets.js && electron-builder --win --x64",
-    "pack:all": "tsc -p tsconfig.json && node copy-assets.js && electron-builder --mac --arm64 --x64 && electron-builder --win --x64"
+    "pack:all": "tsc -p tsconfig.json && node copy-assets.js && electron-builder --mac && electron-builder --win --x64"
   },
   "build": {
     "appId": "com.podcastai.desktop",
@@ -21,6 +22,18 @@
       "dist/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "voice-runtime",
+        "to": "voice-runtime",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/.DS_Store",
+          "!**/._*"
+        ]
+      }
+    ],
     "afterPack": "./afterPack.js",
     "mac": {
       "category": "public.app-category.productivity",
@@ -28,15 +41,7 @@
         {
           "target": "dmg",
           "arch": [
-            "arm64",
-            "x64"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "arm64",
-            "x64"
+            "arm64"
           ]
         }
       ],

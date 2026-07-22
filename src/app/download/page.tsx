@@ -17,41 +17,41 @@ interface ReleaseAsset {
   version?: string
 }
 
-// 客户端下载配置 - 指向 GitHub Release v1.0.3，确保稳定可下载
-const GITHUB_RELEASE_BASE = 'https://github.com/Aiven66/PodcastAI/releases/download/v1.0.3'
+// 客户端下载配置 - 指向 GitHub Release v1.0.4，内置 Python 运行时
+const GITHUB_RELEASE_BASE = 'https://github.com/Aiven66/PodcastAI/releases/download/v1.0.4'
 
 const RELEASE_ASSETS: ReleaseAsset[] = [
-  // macOS Apple Silicon (M1/M2/M3/M4) - 优先 DMG 格式
+  // macOS Apple Silicon (M1/M2/M3/M4) - DMG 格式，内置 Python 运行时
   {
-    name: 'PodcastAI-1.0.3-arm64.dmg',
+    name: 'PodcastAI-1.0.4-arm64.dmg',
     platform: 'mac',
     arch: 'arm64',
-    url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.3-arm64.dmg`,
-    size: '约 93 MB',
-    version: '1.0.3',
+    url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.4-arm64.dmg`,
+    size: '约 343 MB',
+    version: '1.0.4',
   },
-  // macOS Intel (x64) - DMG 格式
+  // macOS Intel (x64) - 暂未构建（后续版本支持）
   {
-    name: 'PodcastAI-1.0.3.dmg',
+    name: 'PodcastAI-1.0.4.dmg',
     platform: 'mac',
     arch: 'x64',
-    url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.3.dmg`,
-    size: '约 100 MB',
-    version: '1.0.3',
+    url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.4.dmg`,
+    size: '约 350 MB',
+    version: '1.0.4',
   },
-  // Windows x64 - NSIS 安装包（GitHub 上传时空格会被替换为点号）
+  // Windows x64 - NSIS 安装包（后续版本支持）
   {
-    name: 'PodcastAI.Setup.1.0.3.exe',
+    name: 'PodcastAI.Setup.1.0.4.exe',
     platform: 'windows',
     arch: 'x64',
-    url: `${GITHUB_RELEASE_BASE}/PodcastAI.Setup.1.0.3.exe`,
-    size: '约 78 MB',
-    version: '1.0.3',
+    url: `${GITHUB_RELEASE_BASE}/PodcastAI.Setup.1.0.4.exe`,
+    size: '约 350 MB',
+    version: '1.0.4',
   },
 ]
 
-// Windows 客户端已发布
-const WINDOWS_AVAILABLE = true
+// Windows 客户端暂不可用（v1.0.4 仅 Mac arm64）
+const WINDOWS_AVAILABLE = false
 
 export default function DownloadPage() {
   const { locale } = useLocale()
@@ -224,17 +224,17 @@ export default function DownloadPage() {
           </Card>
         </div>
 
-        {/* What's New in v1.0.3 */}
+        {/* What's New in v1.0.4 */}
         <Card className="mb-10 border-primary/40 bg-primary/5">
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
                 <CardTitle className="flex items-center gap-2">
-                  <Badge variant="default">v1.0.3</Badge>
+                  <Badge variant="default">v1.0.4</Badge>
                   {t('What\'s New', '最新更新')}
                 </CardTitle>
                 <CardDescription className="mt-1">
-                  {t('Built-in voice service manager - resolve offline cloning issues', '内置语音服务管理器，解决离线声音克隆问题')}
+                  {t('Built-in Python runtime - no environment setup required', '内置 Python 运行时，无需安装任何环境')}
                 </CardDescription>
               </div>
             </div>
@@ -243,27 +243,27 @@ export default function DownloadPage() {
             <ul className="grid md:grid-cols-2 gap-x-6 gap-y-2 text-sm">
               <li className="flex items-start gap-2">
                 <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                <span>{t('Built-in Python voice service manager with one-click start/stop', '内置 Python 语音服务管理器，一键启动/停止')}</span>
+                <span>{t('Built-in Python 3.10.20 runtime with all CosyVoice2 dependencies', '内置 Python 3.10.20 运行时，包含全部 CosyVoice2 依赖')}</span>
               </li>
               <li className="flex items-start gap-2">
                 <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                <span>{t('Auto-detect Python 3.10+ and voice-service environment', '自动检测 Python 3.10+ 和 voice-service 环境')}</span>
+                <span>{t('Auto-start voice service on app launch - works out of the box', '应用启动时自动启动语音服务，开箱即用')}</span>
               </li>
               <li className="flex items-start gap-2">
                 <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                <span>{t('Real-time service logs for troubleshooting', '实时服务日志，方便排查启动问题')}</span>
+                <span>{t('Model download manager with progress and resume support', '模型下载管理器，支持进度显示和断点续传')}</span>
               </li>
               <li className="flex items-start gap-2">
                 <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                <span>{t('Optional auto-start service on app launch', '可选应用启动时自动启动服务')}</span>
+                <span>{t('Dual-source download from HuggingFace + hf-mirror.com', 'HuggingFace + hf-mirror.com 双源下载')}</span>
               </li>
               <li className="flex items-start gap-2">
                 <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                <span>{t('6-step setup wizard for first-time configuration', '6 步设置向导，首次使用更友好')}</span>
+                <span>{t('Edge-tts fallback for podcast synthesis without model', 'edge-tts 降级路径，无需模型也能合成播客')}</span>
               </li>
               <li className="flex items-start gap-2">
                 <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                <span>{t('Offline banner with quick-start shortcut', '离线 banner 提示，一键跳转启动服务')}</span>
+                <span>{t('Optimized runtime size (967MB) with trimmed unused packages', '优化运行时体积（967MB），精简非必要包')}</span>
               </li>
             </ul>
           </CardContent>

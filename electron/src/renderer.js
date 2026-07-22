@@ -215,6 +215,28 @@ const I18N = {
     refreshDetection: '刷新检测',
     serviceStatusCheck: '检测服务状态',
     portConflict: '端口 8907 可能被占用，请检查是否有其他进程占用',
+    // ─── 模型下载（v1.0.4） ───
+    modelManager: '语音模型',
+    modelManagerDesc: 'CosyVoice2 声音克隆模型（约 3.6GB，首次使用需下载）',
+    modelStatus: '模型状态',
+    modelReady: '模型已就绪',
+    modelNotReady: '模型未下载',
+    modelPartial: '部分下载',
+    modelDownload: '下载模型',
+    modelRedownload: '重新下载',
+    modelAbort: '中止下载',
+    modelDownloading: '下载中...',
+    modelDownloadComplete: '模型下载完成',
+    modelDownloadFailed: '模型下载失败',
+    modelDownloadAborted: '已中止下载',
+    modelCurrentFile: '当前文件',
+    modelProgress: '总进度',
+    modelSpeed: '下载速度',
+    modelFiles: '文件',
+    modelSize: '大小',
+    modelOpenDir: '在文件夹中显示',
+    modelAutoStartHint: '应用启动时会自动启动语音服务，无需手动配置',
+    serviceAutoStarting: '语音服务正在启动中...',
   },
   en: {
     appName: 'PodcastAI',
@@ -423,6 +445,28 @@ const I18N = {
     refreshDetection: 'Refresh Detection',
     serviceStatusCheck: 'Check Service Status',
     portConflict: 'Port 8907 may be in use. Check if another process is using it.',
+    // ─── Model Download (v1.0.4) ───
+    modelManager: 'Voice Model',
+    modelManagerDesc: 'CosyVoice2 voice cloning model (~3.6GB, downloads on first use)',
+    modelStatus: 'Model Status',
+    modelReady: 'Model ready',
+    modelNotReady: 'Model not downloaded',
+    modelPartial: 'Partially downloaded',
+    modelDownload: 'Download Model',
+    modelRedownload: 'Re-download',
+    modelAbort: 'Abort',
+    modelDownloading: 'Downloading...',
+    modelDownloadComplete: 'Model download complete',
+    modelDownloadFailed: 'Model download failed',
+    modelDownloadAborted: 'Download aborted',
+    modelCurrentFile: 'Current file',
+    modelProgress: 'Progress',
+    modelSpeed: 'Speed',
+    modelFiles: 'Files',
+    modelSize: 'Size',
+    modelOpenDir: 'Show in Folder',
+    modelAutoStartHint: 'Voice service starts automatically on app launch — no manual setup needed',
+    serviceAutoStarting: 'Voice service is starting...',
   },
 }
 
@@ -492,8 +536,23 @@ const state = {
     autoStart: false,
     settingsLoaded: false,
   },
+  // 模型下载（v1.0.4）
+  model: {
+    status: null, // { ready, existing, total, missing }
+    downloadState: {
+      isDownloading: false,
+      currentFile: '',
+      currentIndex: 0,
+      totalFiles: 0,
+      bytesDownloaded: 0,
+      totalBytes: 0,
+      speed: 0,
+      error: null,
+      percent: 0,
+    },
+  },
   // 客户端版本信息（init 时异步加载）
-  appVersion: { version: '1.0.3', platform: 'unknown', arch: 'unknown' },
+  appVersion: { version: '1.0.4', platform: 'unknown', arch: 'unknown' },
 }
 
 // ════════════════════════════════════════════════════════════
@@ -526,6 +585,18 @@ function formatDate(timestamp) {
   if (diff < 3600000) return state.locale === 'zh' ? `${Math.floor(diff/60000)}分钟前` : `${Math.floor(diff/60000)}m ago`
   if (diff < 86400000) return state.locale === 'zh' ? `${Math.floor(diff/3600000)}小时前` : `${Math.floor(diff/3600000)}h ago`
   return d.toLocaleDateString(state.locale === 'zh' ? 'zh-CN' : 'en-US')
+}
+
+function formatBytes(bytes) {
+  if (!bytes || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let i = 0
+  let v = bytes
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v.toFixed(i === 0 ? 0 : (v < 10 ? 2 : 1))} ${units[i]}`
 }
 
 function toast(message, type = 'info') {
@@ -804,17 +875,19 @@ function render() {
 
 function renderOfflineBanner() {
   const sm = state.serviceManager
+  // v1.0.4: 服务由 main.ts 自动启动；如果进程已运行但 HTTP 还未就绪，提示"正在启动"
+  const isAutoStarting = sm.processRunning && state.serviceStatus === 'offline'
   return `
     <div class="bg-amber-500/10 border-b border-amber-500/30 px-6 py-3 flex items-center justify-between gap-4">
       <div class="flex items-center gap-3 flex-1 min-w-0">
         <div class="w-2 h-2 rounded-full bg-amber-500 pulse-dot shrink-0"></div>
         <div class="text-sm text-amber-300 truncate">
-          ${t('offlineBanner')}
+          ${isAutoStarting ? t('serviceAutoStarting') : t('offlineBanner')}
           ${sm.processRunning ? ` · <span class="text-amber-200">${t('serviceRunning')} (PID ${sm.processPid})</span>` : ''}
         </div>
       </div>
       <div class="flex items-center gap-2 shrink-0">
-        ${sm.detection && sm.detection.voiceServicePath ? `
+        ${isAutoStarting ? '' : `
           <button onclick="startServiceAction()" disabled="${sm.isStarting}" class="px-3 py-1.5 text-xs bg-primary-600 hover:bg-primary-500 disabled:opacity-50 text-white rounded-md transition flex items-center gap-1.5">
             ${sm.isStarting ? `
               <svg class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
@@ -824,7 +897,7 @@ function renderOfflineBanner() {
               ${t('offlineBannerAction')}
             `}
           </button>
-        ` : ''}
+        `}
         <button onclick="switchView('settings')" class="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-md transition">
           ${t('goToSettings')}
         </button>
@@ -1265,6 +1338,9 @@ function renderSettingsView() {
         </div>
       </div>
 
+      <!-- Model Manager (v1.0.4) -->
+      ${renderModelManager()}
+
       <!-- Service Manager -->
       <div class="bg-zinc-900/60 rounded-xl border border-zinc-800 p-5 mb-4">
         <div class="flex items-start justify-between mb-3">
@@ -1441,6 +1517,93 @@ function renderSetupGuide() {
         <li>${t('setupStep6')}</li>
       </ol>
       <div class="text-xs text-zinc-600 mt-2">${t('modelsPathHint')}</div>
+    </div>
+  `
+}
+
+// ════════════════════════════════════════════════════════════
+// 模型管理（v1.0.4）
+// ════════════════════════════════════════════════════════════
+function renderModelManager() {
+  const m = state.model
+  const status = m.status
+  const dl = m.downloadState
+  const ready = status?.ready
+  const partial = status && !status.ready && status.existing > 0
+
+  let statusBadge
+  if (ready) {
+    statusBadge = `<span class="px-2 py-0.5 rounded bg-green-500/10 text-green-400 text-xs">${t('modelReady')}</span>`
+  } else if (partial) {
+    statusBadge = `<span class="px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 text-xs">${t('modelPartial')} (${status.existing}/${status.total})</span>`
+  } else {
+    statusBadge = `<span class="px-2 py-0.5 rounded bg-red-500/10 text-red-400 text-xs">${t('modelNotReady')}</span>`
+  }
+
+  const totalSize = dl.totalBytes || 0
+  const downloadedSize = dl.bytesDownloaded || 0
+  const percent = dl.percent || 0
+
+  return `
+    <div class="bg-zinc-900/60 rounded-xl border border-zinc-800 p-5 mb-4">
+      <div class="flex items-start justify-between mb-3">
+        <div>
+          <h3 class="text-sm font-semibold">${t('modelManager')}</h3>
+          <p class="text-xs text-zinc-500 mt-1">${t('modelManagerDesc')}</p>
+        </div>
+        ${statusBadge}
+      </div>
+
+      <!-- 下载进度 -->
+      ${dl.isDownloading ? `
+        <div class="mt-3 space-y-2">
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-zinc-400">
+              ${t('modelCurrentFile')}: <span class="text-zinc-300 font-mono">${escapeHtml(dl.currentFile)}</span>
+              <span class="text-zinc-500 ml-2">(${dl.currentIndex + 1}/${dl.totalFiles})</span>
+            </span>
+            <span class="text-zinc-400">${percent}%</span>
+          </div>
+          <div class="relative h-2 bg-zinc-800 rounded-full overflow-hidden">
+            <div class="absolute inset-y-0 left-0 bg-primary-600 transition-all" style="width: ${percent}%"></div>
+          </div>
+          <div class="flex items-center justify-between text-xs text-zinc-500">
+            <span>${formatBytes(downloadedSize)} / ${formatBytes(totalSize)}</span>
+            <span>${formatBytes(dl.speed)}/s</span>
+          </div>
+          <button onclick="abortModelDownload()" class="mt-2 px-3 py-1.5 text-xs bg-red-600 hover:bg-red-500 text-white rounded-md transition">
+            ${t('modelAbort')}
+          </button>
+        </div>
+      ` : `
+        <!-- 非下载状态：显示状态信息和操作按钮 -->
+        <div class="mt-3 space-y-3">
+          ${status ? `
+            <div class="text-xs text-zinc-500 flex items-center gap-4">
+              <span>${t('modelFiles')}: <span class="text-zinc-300">${status.existing}/${status.total}</span></span>
+              <span>${t('modelSize')}: <span class="text-zinc-300">~3.6 GB</span></span>
+            </div>
+          ` : ''}
+          ${dl.error ? `
+            <div class="text-xs text-red-400">${t('modelDownloadFailed')}: ${escapeHtml(dl.error)}</div>
+          ` : ''}
+          <div class="flex items-center gap-2">
+            ${ready ? `
+              <button onclick="downloadModelAction()" class="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-md transition">
+                ${t('modelRedownload')}
+              </button>
+            ` : `
+              <button onclick="downloadModelAction()" class="px-3 py-1.5 text-xs bg-primary-600 hover:bg-primary-500 text-white rounded-md transition flex items-center gap-1.5">
+                <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"></path></svg>
+                ${t('modelDownload')}
+              </button>
+            `}
+            <button onclick="openModelDir()" class="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-md transition">
+              ${t('modelOpenDir')}
+            </button>
+          </div>
+        </div>
+      `}
     </div>
   `
 }
@@ -1922,6 +2085,59 @@ window.clearServiceLogs = async function() {
 }
 
 // ════════════════════════════════════════════════════════════
+// 模型管理事件（v1.0.4）
+// ════════════════════════════════════════════════════════════
+window.downloadModelAction = async function() {
+  if (!window.podcastai?.model) return
+  if (state.model.downloadState.isDownloading) return
+  state.model.downloadState.error = null
+  state.model.downloadState.isDownloading = true
+  render()
+  try {
+    const result = await window.podcastai.model.download()
+    if (result.success) {
+      toast(t('modelDownloadComplete'), 'success')
+      // 刷新模型状态
+      state.model.status = await window.podcastai.model.status()
+    } else {
+      if (result.error === 'Aborted') {
+        toast(t('modelDownloadAborted'), 'warning')
+      } else {
+        toast(result.error || t('modelDownloadFailed'), 'error')
+      }
+    }
+  } catch (err) {
+    toast(err.message || t('modelDownloadFailed'), 'error')
+  } finally {
+    state.model.downloadState = await window.podcastai.model.getDownloadState()
+    state.model.status = await window.podcastai.model.status()
+    render()
+  }
+}
+
+window.abortModelDownload = async function() {
+  if (!window.podcastai?.model) return
+  await window.podcastai.model.abortDownload()
+  // 注意：实际中止是异步的，会在 onDownloadProgress 中更新 UI
+}
+
+window.openModelDir = async function() {
+  if (!window.podcastai?.model) return
+  await window.podcastai.model.openDir()
+}
+
+async function refreshModelStatus() {
+  if (!window.podcastai?.model) return
+  try {
+    state.model.status = await window.podcastai.model.status()
+    state.model.downloadState = await window.podcastai.model.getDownloadState()
+    render()
+  } catch (err) {
+    console.error('Failed to refresh model status:', err)
+  }
+}
+
+// ════════════════════════════════════════════════════════════
 // 初始化
 // ════════════════════════════════════════════════════════════
 async function init() {
@@ -1968,7 +2184,7 @@ async function init() {
       // ignore
     }
 
-    // 检测环境
+    // 检测环境（v1.0.4 兼容：返回内置运行时状态）
     await window.detectServiceEnvironment()
 
     // 查询进程状态
@@ -1979,6 +2195,21 @@ async function init() {
     } catch {
       // ignore
     }
+  }
+
+  // 模型管理初始化（v1.0.4）
+  if (window.podcastai?.model) {
+    // 订阅下载进度
+    window.podcastai.model.onDownloadProgress((progress) => {
+      state.model.downloadState = progress
+      // 只在设置页可见时更新 UI（避免频繁全量 render）
+      const modelSection = document.getElementById('model-download-section')
+      if (modelSection || state.activeView === 'settings') {
+        render()
+      }
+    })
+    // 初始查询模型状态
+    await refreshModelStatus()
   }
 
   // 检查服务状态
@@ -1993,6 +2224,21 @@ async function init() {
     await checkServiceHealth()
     if (prev !== state.serviceStatus) render()
   }, 30000)
+
+  // v1.0.4: 如果服务进程在运行但 HTTP 还未就绪，启动轮询加速状态切换
+  if (state.serviceManager.processRunning && state.serviceStatus === 'offline') {
+    const poll = async (attempts) => {
+      if (attempts >= 30) return
+      const ok = await checkServiceHealth()
+      if (ok) {
+        await fetchClones()
+        render()
+      } else {
+        setTimeout(() => poll(attempts + 1), 1500)
+      }
+    }
+    setTimeout(() => poll(0), 1500)
+  }
 }
 
 init()

@@ -48,11 +48,58 @@ os.environ["NO_PROXY"] = "localhost,127.0.0.1"
 
 
 # ─── 常量 ───
-DATA_DIR = Path(os.environ.get("VOICE_DATA_DIR", str(Path(__file__).parent / "voice-data")))
+# 桌面客户端环境检测：
+# - PODCASTAI_DESKTOP=1 环境变量由 Electron 主进程设置
+# - sys.frozen 由 PyInstaller 设置
+# 两种方式都表示运行在打包的桌面客户端中
+def _is_desktop_app():
+    """检测是否运行在桌面客户端环境中"""
+    return getattr(sys, 'frozen', False) or os.environ.get("PODCASTAI_DESKTOP") == "1"
+
+def _get_app_dir():
+    """获取应用根目录（支持桌面客户端环境）"""
+    if _is_desktop_app():
+        # 桌面客户端：使用 main.py 所在目录
+        return Path(__file__).parent
+    return Path(__file__).parent
+
+def _get_data_dir():
+    """获取数据目录（用户数据，可写）"""
+    # 优先使用环境变量
+    env_dir = os.environ.get("VOICE_DATA_DIR")
+    if env_dir:
+        return Path(env_dir)
+    # 桌面客户端环境：使用用户目录
+    if _is_desktop_app():
+        # macOS: ~/Library/Application Support/PodcastAI/voice-data
+        # Windows: %APPDATA%/PodcastAI/voice-data
+        home = Path.home()
+        if sys.platform == 'darwin':
+            return home / "Library" / "Application Support" / "PodcastAI" / "voice-data"
+        else:
+            return home / "AppData" / "Roaming" / "PodcastAI" / "voice-data"
+    # 开发环境
+    return Path(__file__).parent / "voice-data"
+
+def _get_model_dir():
+    """获取 CosyVoice2 模型目录"""
+    # 优先使用环境变量
+    env_dir = os.environ.get("COSYVOICE_MODEL_DIR")
+    if env_dir:
+        return Path(env_dir)
+    # 桌面客户端环境：模型在用户数据目录
+    if _is_desktop_app():
+        return _get_data_dir() / "models" / "CosyVoice2-0.5B"
+    # 开发环境
+    return Path(__file__).parent / "CosyVoice" / "pretrained_models" / "CosyVoice2-0.5B"
+
+APP_DIR = _get_app_dir()
+DATA_DIR = _get_data_dir()
 CLONES_DIR = DATA_DIR / "clones"
 OUTPUT_DIR = DATA_DIR / "output"
-SCRIPT_DIR = Path(__file__).parent
-GPT_SOVITS_DIR = SCRIPT_DIR / "GPT-SoVITS"
+SCRIPT_DIR = APP_DIR
+GPT_SOVITS_DIR = APP_DIR / "GPT-SoVITS"
+MODEL_DIR = _get_model_dir()
 
 for d in [CLONES_DIR, OUTPUT_DIR]:
     d.mkdir(parents=True, exist_ok=True)
@@ -1560,11 +1607,15 @@ def load_cosyvoice():
         try:
             import torch
             # 将 CosyVoice 目录添加到 Python 路径
-            cosyvoice_root = str(Path(__file__).parent / "CosyVoice")
+            # 打包环境：CosyVoice 源码在 APP_DIR/CosyVoice
+            # 开发环境：CosyVoice 源码在 __file__/../CosyVoice
+            cosyvoice_root = str(APP_DIR / "CosyVoice")
+            if not os.path.exists(cosyvoice_root) and not getattr(sys, 'frozen', False):
+                cosyvoice_root = str(Path(__file__).parent / "CosyVoice")
             if cosyvoice_root not in sys.path:
                 sys.path.insert(0, cosyvoice_root)
             from cosyvoice.cli.cosyvoice import CosyVoice2
-            model_dir = str(Path(__file__).parent / "CosyVoice" / "pretrained_models" / "CosyVoice2-0.5B")
+            model_dir = str(MODEL_DIR)
             _cosyvoice_device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
             logger.info(f"Loading CosyVoice2 from {model_dir} on {_cosyvoice_device}")
             _cosyvoice_model = CosyVoice2(model_dir)
@@ -1929,6 +1980,12 @@ async def startup_event():
     loop = asyncio.get_running_loop()
 
     def _preload():
+        # 检查模型是否已下载
+        model_dir = MODEL_DIR
+        if not model_dir.exists() or not (model_dir / "llm.pt").exists():
+            logger.info(f"CosyVoice2 model not found at {model_dir}, skipping preload")
+            logger.info("Model will be downloaded by the desktop app. Visit Settings to download.")
+            return
         logger.info("Preloading CosyVoice2 model on startup...")
         if load_cosyvoice():
             logger.info("CosyVoice2 preloaded successfully")
@@ -1951,6 +2008,45 @@ app.add_middleware(
 app.mount("/output", StaticFiles(directory=str(OUTPUT_DIR)), name="output")
 
 # ==================== API 路由 ====================
+
+@app.get("/models/status")
+async def models_status():
+    """检查 CosyVoice2 模型是否已下载"""
+    model_dir = MODEL_DIR
+    required_files = [
+        "llm.pt", "flow.pt", "hift.pt",
+        "flow.encoder.fp16",
+        "flow.cache.pt",
+        "flow.decoder.estimator.fp32.onnx",
+        "speech_tokenizer_v2.batch.onnx",
+        "campplus.onnx",
+        "cosyvoice2.yaml",
+        "configuration.json",
+    ]
+    existing = 0
+    missing_files = []
+    for f in required_files:
+        if (model_dir / f).exists():
+            existing += 1
+        else:
+            missing_files.append(f)
+    total = len(required_files)
+    ready = existing == total
+    # 计算模型目录大小
+    model_size_mb = 0
+    if model_dir.exists():
+        for f in model_dir.rglob("*"):
+            if f.is_file():
+                model_size_mb += f.stat().st_size
+    return {
+        "ready": ready,
+        "model_dir": str(model_dir),
+        "existing_files": existing,
+        "total_files": total,
+        "missing_files": missing_files,
+        "model_size_mb": round(model_size_mb / 1024 / 1024, 2),
+    }
+
 
 @app.get("/health")
 async def health():

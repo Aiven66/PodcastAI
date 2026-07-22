@@ -1,16 +1,18 @@
 /**
- * PodcastAI Desktop - Electron Main Process
+ * PodcastAI Desktop - Electron Main Process v1.0.4
  *
- * 加载本地 HTML UI（不依赖在线 web）
- * 桌面端直接调用本地 Python 语音服务
- *
- * 内置服务管理器：检测 Python / voice-service，一键启动 / 停止
+ * 内置 Python 运行时 + voice-service，开箱即用
+ * - 自动启动内置 voice-service（无需用户安装 Python）
+ * - 首次使用时下载 CosyVoice2 模型
+ * - 自动管理服务生命周期
  */
 
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
 import * as path from 'path'
 import * as fs from 'fs'
-import { spawn, execSync, ChildProcess } from 'child_process'
+import * as http from 'http'
+import * as https from 'https'
+import { spawn, ChildProcess } from 'child_process'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -19,124 +21,496 @@ let serviceProcess: ChildProcess | null = null
 let serviceLogs: string[] = []
 const MAX_LOGS = 500
 
+// ─── 模型下载状态 ───
+interface ModelDownloadState {
+  isDownloading: boolean
+  currentFile: string
+  currentIndex: number
+  totalFiles: number
+  bytesDownloaded: number
+  totalBytes: number
+  speed: number // bytes/sec
+  error: string | null
+}
+let modelDownloadState: ModelDownloadState = {
+  isDownloading: false,
+  currentFile: '',
+  currentIndex: 0,
+  totalFiles: 0,
+  bytesDownloaded: 0,
+  totalBytes: 0,
+  speed: 0,
+  error: null,
+}
+let modelDownloadAborted = false
+
 function pushLog(line: string) {
   const ts = new Date().toISOString().slice(11, 19)
   const entry = `[${ts}] ${line}`
   serviceLogs.push(entry)
   if (serviceLogs.length > MAX_LOGS) serviceLogs.shift()
-  // 推送到渲染进程
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('service:log', entry)
   }
 }
 
-function detectPython(): { python: string | null; version: string | null; venvPython: string | null } {
-  // 1. 检查 voice-service/venv（如果用户配置了 voiceServicePath）
-  const settings = loadSettings()
-  if (settings.voiceServicePath) {
-    const venvPython = process.platform === 'win32'
-      ? path.join(settings.voiceServicePath, 'venv', 'Scripts', 'python.exe')
-      : path.join(settings.voiceServicePath, 'venv', 'bin', 'python')
-    if (fs.existsSync(venvPython)) {
-      try {
-        const ver = execSync(`"${venvPython}" --version`, { encoding: 'utf-8', timeout: 5000 }).trim()
-        return { python: venvPython, version: ver, venvPython }
-      } catch {
-        // fall through
-      }
+// ─── 路径工具 ───
+function getResourcesDir(): string {
+  // 打包后：process.resourcesPath
+  // 开发环境：electron 目录
+  if (app.isPackaged) {
+    return process.resourcesPath
+  }
+  return path.join(__dirname, '..')
+}
+
+function getVoiceRuntimeDir(): string {
+  return path.join(getResourcesDir(), 'voice-runtime')
+}
+
+function getPythonExe(): string {
+  const runtimeDir = getVoiceRuntimeDir()
+  if (process.platform === 'win32') {
+    return path.join(runtimeDir, 'python', 'python.exe')
+  }
+  return path.join(runtimeDir, 'python', 'bin', 'python3')
+}
+
+function getVoiceServiceDir(): string {
+  return path.join(getVoiceRuntimeDir(), 'voice-service')
+}
+
+function getMainPy(): string {
+  return path.join(getVoiceServiceDir(), 'main.py')
+}
+
+function getPythonHome(): string {
+  return path.join(getVoiceRuntimeDir(), 'python')
+}
+
+function getPythonPath(): string {
+  const pyVer = 'python3.10'
+  return [
+    path.join(getPythonHome(), 'lib', pyVer),
+    getVoiceServiceDir(),
+  ].join(process.platform === 'win32' ? ';' : ':')
+}
+
+function getUserDataDir(): string {
+  // voice-service 的用户数据目录（与 main.py 中的逻辑一致）
+  const home = app.getPath('home')
+  if (process.platform === 'darwin') {
+    return path.join(home, 'Library', 'Application Support', 'PodcastAI', 'voice-data')
+  } else {
+    return path.join(home, 'AppData', 'Roaming', 'PodcastAI', 'voice-data')
+  }
+}
+
+function getModelDir(): string {
+  return path.join(getUserDataDir(), 'models', 'CosyVoice2-0.5B')
+}
+
+// ─── 检查内置运行时是否存在 ───
+function checkRuntimeExists(): boolean {
+  const pythonExe = getPythonExe()
+  const mainPy = getMainPy()
+  return fs.existsSync(pythonExe) && fs.existsSync(mainPy)
+}
+
+// ─── 检查模型是否已下载 ───
+const REQUIRED_MODEL_FILES = [
+  'llm.pt',
+  'flow.pt',
+  'hift.pt',
+  'flow.encoder.fp16',
+  'flow.cache.pt',
+  'flow.decoder.estimator.fp32.onnx',
+  'speech_tokenizer_v2.batch.onnx',
+  'campplus.onnx',
+  'cosyvoice2.yaml',
+  'configuration.json',
+]
+
+function checkModelExists(): { ready: boolean; existing: number; total: number; missing: string[] } {
+  const modelDir = getModelDir()
+  const existing = []
+  const missing = []
+  for (const f of REQUIRED_MODEL_FILES) {
+    if (fs.existsSync(path.join(modelDir, f))) {
+      existing.push(f)
+    } else {
+      missing.push(f)
     }
   }
+  return {
+    ready: missing.length === 0,
+    existing: existing.length,
+    total: REQUIRED_MODEL_FILES.length,
+    missing,
+  }
+}
 
-  // 2. 检查系统 Python
-  const candidates = process.platform === 'win32'
-    ? ['python', 'python3', 'py']
-    : ['python3', 'python']
-  for (const cmd of candidates) {
-    try {
-      const ver = execSync(`${cmd} --version`, { encoding: 'utf-8', timeout: 5000 }).trim()
-      // 解析 "Python 3.11.5" → 检查 >= 3.10
-      const match = ver.match(/Python\s+(\d+)\.(\d+)/)
-      if (match) {
-        const major = parseInt(match[1], 10)
-        const minor = parseInt(match[2], 10)
-        if (major > 3 || (major === 3 && minor >= 10)) {
-          return { python: cmd, version: ver, venvPython: null }
+// ─── 模型下载 ───
+// 下载源：HuggingFace 官方 + hf-mirror.com 镜像
+const MODEL_DOWNLOAD_URLS = [
+  'https://huggingface.co/FunAudioLLM/CosyVoice2-0.5B/resolve/main/',
+  'https://hf-mirror.com/FunAudioLLM/CosyVoice2-0.5B/resolve/main/',
+]
+
+// 模型文件大小（字节，用于进度显示）
+const MODEL_FILE_SIZES: Record<string, number> = {
+  'llm.pt': 2040109466,
+  'speech_tokenizer_v2.batch.onnx': 495875072,
+  'flow.pt': 451887053,
+  'flow.cache.pt': 451887053,
+  'flow.decoder.estimator.fp32.onnx': 286326784,
+  'hift.pt': 83886080,
+  'campplus.onnx': 28311552,
+  'flow.encoder.fp16': 320,
+  'cosyvoice2.yaml': 7372,
+  'configuration.json': 47,
+}
+
+function downloadFile(url: string, destPath: string, onProgress: (downloaded: number, total: number) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(destPath)
+    let downloaded = 0
+    let lastTime = Date.now()
+    let lastDownloaded = 0
+
+    const req = https.get(url, (response) => {
+      // 处理重定向
+      if (response.statusCode === 302 || response.statusCode === 301) {
+        const redirectUrl = response.headers.location
+        if (redirectUrl) {
+          file.close()
+          fs.unlinkSync(destPath)
+          downloadFile(redirectUrl, destPath, onProgress).then(resolve).catch(reject)
+          return
         }
       }
-    } catch {
-      // try next
-    }
-  }
-  return { python: null, version: null, venvPython: null }
-}
-
-function detectVoiceService(): { path: string | null; hasMainPy: boolean; hasVenv: boolean; hasModels: boolean } {
-  const settings = loadSettings()
-  const candidates: string[] = []
-
-  // 1. 用户配置的路径
-  if (settings.voiceServicePath) candidates.push(settings.voiceServicePath)
-
-  // 2. 常见位置
-  if (app.isPackaged) {
-    // 打包后：在用户目录下查找
-    const home = app.getPath('home')
-    candidates.push(path.join(home, 'PodcastAI', 'voice-service'))
-    candidates.push(path.join(home, 'Documents', 'PodcastAI', 'voice-service'))
-    candidates.push(path.join(home, 'podcastai-voice-service'))
-  } else {
-    // 开发环境：相对项目根目录
-    candidates.push(path.resolve(__dirname, '..', '..', 'voice-service'))
-  }
-
-  for (const dir of candidates) {
-    if (dir && fs.existsSync(dir)) {
-      const mainPy = path.join(dir, 'main.py')
-      const venvDir = path.join(dir, 'venv')
-      const modelDir = path.join(dir, 'CosyVoice', 'pretrained_models', 'CosyVoice2-0.5B')
-      const hasModels = fs.existsSync(modelDir) || fs.existsSync(path.join(dir, 'CosyVoice', 'pretrained_models'))
-      return {
-        path: dir,
-        hasMainPy: fs.existsSync(mainPy),
-        hasVenv: fs.existsSync(venvDir),
-        hasModels,
+      if (response.statusCode !== 200) {
+        file.close()
+        fs.unlinkSync(destPath)
+        reject(new Error(`HTTP ${response.statusCode}`))
+        return
       }
+
+      const total = parseInt(response.headers['content-length'] || '0', 10)
+      response.on('data', (chunk: Buffer) => {
+        if (modelDownloadAborted) {
+          req.destroy()
+          file.close()
+          try { fs.unlinkSync(destPath) } catch {}
+          reject(new Error('Aborted'))
+          return
+        }
+        downloaded += chunk.length
+        const now = Date.now()
+        if (now - lastTime >= 500) {
+          const speed = (downloaded - lastDownloaded) / ((now - lastTime) / 1000)
+          lastTime = now
+          lastDownloaded = downloaded
+          onProgress(downloaded, total)
+          modelDownloadState.speed = speed
+        }
+      })
+      response.pipe(file)
+      file.on('finish', () => {
+        file.close()
+        onProgress(downloaded, total || downloaded)
+        resolve()
+      })
+    })
+    req.on('error', (err) => {
+      file.close()
+      try { fs.unlinkSync(destPath) } catch {}
+      reject(err)
+    })
+  })
+}
+
+async function downloadModelWithFallback(filename: string, destPath: string, onProgress: (downloaded: number, total: number) => void): Promise<void> {
+  let lastError: Error | null = null
+  for (const baseUrl of MODEL_DOWNLOAD_URLS) {
+    try {
+      pushLog(`  Trying: ${baseUrl}${filename}`)
+      await downloadFile(`${baseUrl}${filename}`, destPath, onProgress)
+      pushLog(`  ✓ Downloaded: ${filename}`)
+      return
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err))
+      pushLog(`  ✗ Failed: ${baseUrl}${filename} - ${lastError.message}`)
+      // 如果是 aborted，不尝试下一个源
+      if (lastError.message === 'Aborted') throw lastError
     }
   }
-  return { path: null, hasMainPy: false, hasVenv: false, hasModels: false }
+  throw lastError || new Error('All download sources failed')
 }
 
-// ─── 设置持久化 ───
-interface AppSettings {
-  voiceServicePath?: string
-  pythonPath?: string
-  autoStartService?: boolean
+function updateDownloadProgress() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('model:download-progress', {
+      ...modelDownloadState,
+      percent: modelDownloadState.totalBytes > 0
+        ? Math.round((modelDownloadState.bytesDownloaded / modelDownloadState.totalBytes) * 100)
+        : 0,
+    })
+  }
 }
 
-function getSettingsPath(): string {
-  return path.join(app.getPath('userData'), 'service-settings.json')
-}
+async function downloadModel(): Promise<{ success: boolean; error?: string }> {
+  if (modelDownloadState.isDownloading) {
+    return { success: false, error: 'Download already in progress' }
+  }
 
-function loadSettings(): AppSettings {
+  const modelStatus = checkModelExists()
+  if (modelStatus.ready) {
+    return { success: true }
+  }
+
+  const modelDir = getModelDir()
+  fs.mkdirSync(modelDir, { recursive: true })
+
+  // 计算总字节数
+  let totalBytes = 0
+  for (const f of REQUIRED_MODEL_FILES) {
+    totalBytes += MODEL_FILE_SIZES[f] || 0
+  }
+
+  modelDownloadAborted = false
+  modelDownloadState = {
+    isDownloading: true,
+    currentFile: '',
+    currentIndex: 0,
+    totalFiles: REQUIRED_MODEL_FILES.length,
+    bytesDownloaded: 0,
+    totalBytes,
+    speed: 0,
+    error: null,
+  }
+
+  pushLog(`Starting model download: ${REQUIRED_MODEL_FILES.length} files, ${(totalBytes / 1024 / 1024 / 1024).toFixed(2)} GB`)
+
   try {
-    const p = getSettingsPath()
-    if (fs.existsSync(p)) {
-      return JSON.parse(fs.readFileSync(p, 'utf-8'))
+    for (let i = 0; i < REQUIRED_MODEL_FILES.length; i++) {
+      if (modelDownloadAborted) {
+        pushLog('Model download aborted')
+        modelDownloadState.isDownloading = false
+        return { success: false, error: 'Aborted' }
+      }
+
+      const filename = REQUIRED_MODEL_FILES[i]
+      const destPath = path.join(modelDir, filename)
+
+      // 如果文件已存在且大小匹配，跳过
+      if (fs.existsSync(destPath)) {
+        const stat = fs.statSync(destPath)
+        const expectedSize = MODEL_FILE_SIZES[filename] || 0
+        if (expectedSize > 0 && Math.abs(stat.size - expectedSize) < 1024) {
+          pushLog(`  ✓ Already exists: ${filename}`)
+          modelDownloadState.currentIndex = i + 1
+          modelDownloadState.bytesDownloaded += stat.size
+          updateDownloadProgress()
+          continue
+        }
+      }
+
+      modelDownloadState.currentFile = filename
+      modelDownloadState.currentIndex = i
+      pushLog(`  Downloading ${i + 1}/${REQUIRED_MODEL_FILES.length}: ${filename}`)
+
+      const baseDownloaded = modelDownloadState.bytesDownloaded
+      await downloadModelWithFallback(filename, destPath, (downloaded, total) => {
+        modelDownloadState.bytesDownloaded = baseDownloaded + downloaded
+        updateDownloadProgress()
+      })
+
+      modelDownloadState.bytesDownloaded = baseDownloaded + (MODEL_FILE_SIZES[filename] || 0)
+      modelDownloadState.currentIndex = i + 1
+      updateDownloadProgress()
     }
-  } catch {
-    // ignore
+
+    modelDownloadState.isDownloading = false
+    pushLog('✓ Model download complete')
+    return { success: true }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    modelDownloadState.isDownloading = false
+    modelDownloadState.error = msg
+    pushLog(`✗ Model download failed: ${msg}`)
+    return { success: false, error: msg }
   }
-  return {}
 }
 
-function saveSettings(s: AppSettings): void {
+// ─── 启动服务 ───
+async function startVoiceService(): Promise<{ success: boolean; pid?: number; error?: string }> {
+  if (serviceProcess) {
+    return { success: false, error: 'Service is already running' }
+  }
+
+  if (!checkRuntimeExists()) {
+    return { success: false, error: 'Voice runtime not found. Please reinstall the app.' }
+  }
+
+  const pythonExe = getPythonExe()
+  const mainPy = getMainPy()
+  const cwd = getVoiceServiceDir()
+
+  pushLog('Starting voice service...')
+  pushLog(`  Python: ${pythonExe}`)
+  pushLog(`  Script: ${mainPy}`)
+  pushLog(`  Port: 8907`)
+
   try {
-    fs.writeFileSync(getSettingsPath(), JSON.stringify(s, null, 2), 'utf-8')
-  } catch {
-    // ignore
+    const env: Record<string, string> = {
+      ...process.env as Record<string, string>,
+      PYTHONHOME: getPythonHome(),
+      PYTHONPATH: getPythonPath(),
+      PODCASTAI_DESKTOP: '1',
+      VOICE_SERVICE_PORT: '8907',
+      no_proxy: 'localhost,127.0.0.1',
+      NO_PROXY: 'localhost,127.0.0.1',
+    }
+
+    serviceProcess = spawn(pythonExe, [mainPy], {
+      cwd,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+
+    serviceProcess.stdout?.on('data', (data: Buffer) => {
+      const lines = data.toString().split('\n').filter((l: string) => l.trim())
+      lines.forEach((line: string) => pushLog(line))
+    })
+
+    serviceProcess.stderr?.on('data', (data: Buffer) => {
+      const lines = data.toString().split('\n').filter((l: string) => l.trim())
+      lines.forEach((line: string) => pushLog(`[stderr] ${line}`))
+    })
+
+    serviceProcess.on('error', (err: Error) => {
+      pushLog(`[ERROR] Process error: ${err.message}`)
+      serviceProcess = null
+    })
+
+    serviceProcess.on('exit', (code: number | null, signal: string | null) => {
+      pushLog(`Process exited (code=${code}, signal=${signal})`)
+      serviceProcess = null
+    })
+
+    // 等待 2 秒确认进程还在运行
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    if (serviceProcess && !serviceProcess.killed) {
+      pushLog('✓ Voice service process started')
+      return { success: true, pid: serviceProcess.pid }
+    }
+    return { success: false, error: 'Process exited immediately. Check logs.' }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    pushLog(`[ERROR] Failed to start: ${msg}`)
+    serviceProcess = null
+    return { success: false, error: msg }
   }
 }
 
+async function stopVoiceService(): Promise<{ success: boolean; error?: string }> {
+  if (!serviceProcess) {
+    return { success: true }
+  }
+  try {
+    pushLog('Stopping voice service...')
+    serviceProcess.kill('SIGTERM')
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    if (serviceProcess && !serviceProcess.killed) {
+      serviceProcess.kill('SIGKILL')
+    }
+    serviceProcess = null
+    pushLog('✓ Voice service stopped')
+    return { success: true }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { success: false, error: msg }
+  }
+}
+
+// ─── HTTP 健康检查 ───
+async function checkServiceHealth(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.get('http://localhost:8907/health', (res) => {
+      let data = ''
+      res.on('data', (chunk) => data += chunk)
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(data)
+          resolve(json.status === 'ok')
+        } catch {
+          resolve(false)
+        }
+      })
+    })
+    req.on('error', () => resolve(false))
+    req.setTimeout(2000, () => {
+      req.destroy()
+      resolve(false)
+    })
+  })
+}
+
+async function waitForService(maxWaitMs: number = 30000): Promise<boolean> {
+  const start = Date.now()
+  while (Date.now() - start < maxWaitMs) {
+    if (await checkServiceHealth()) return true
+    await new Promise(resolve => setTimeout(resolve, 1000))
+  }
+  return false
+}
+
+// ─── 向后兼容 IPC handlers ───
+// 旧版 renderer.js 仍会调用 service:detect / settings / dialog:openDirectory 等 API
+// 这些 API 在 v1.0.4 中已不再需要（运行时内置），但为了不破坏旧 UI，返回兼容数据
+
+ipcMain.handle('service:detect', async () => {
+  // 返回兼容数据：表示"已就绪"
+  const runtimeExists = checkRuntimeExists()
+  const modelStatus = checkModelExists()
+  return {
+    python: runtimeExists ? 'built-in' : null,
+    pythonVersion: runtimeExists ? '3.10.20 (built-in)' : null,
+    venvPython: runtimeExists ? getPythonExe() : null,
+    voiceServicePath: runtimeExists ? getVoiceServiceDir() : null,
+    hasMainPy: runtimeExists,
+    hasVenv: runtimeExists,
+    hasModels: modelStatus.ready,
+    platform: process.platform,
+  }
+})
+
+ipcMain.handle('settings:get', async () => {
+  // v1.0.4 不再需要用户配置环境，返回默认值
+  return {
+    voiceServicePath: getVoiceServiceDir(),
+    pythonPath: getPythonExe(),
+    autoStartService: true, // 始终自动启动
+  }
+})
+
+ipcMain.handle('settings:set', async () => {
+  // 忽略设置（已内置）
+  return true
+})
+
+ipcMain.handle('dialog:openDirectory', async () => {
+  const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
+  return result.canceled ? null : result.filePaths[0]
+})
+
+ipcMain.handle('shell:showItemInFolder', async (_, filePath: string) => {
+  shell.showItemInFolder(filePath)
+  return true
+})
+
+// ─── 窗口创建 ───
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -189,134 +563,32 @@ ipcMain.handle('get-version', () => ({
 }))
 
 // ─── IPC: 服务管理 ───
-ipcMain.handle('service:detect', async () => {
-  const py = detectPython()
-  const vs = detectVoiceService()
-  return {
-    python: py.python,
-    pythonVersion: py.version,
-    venvPython: py.venvPython,
-    voiceServicePath: vs.path,
-    hasMainPy: vs.hasMainPy,
-    hasVenv: vs.hasVenv,
-    hasModels: vs.hasModels,
-    platform: process.platform,
-  }
-})
-
-ipcMain.handle('service:start', async (_, options?: { voiceServicePath?: string; pythonPath?: string }) => {
-  if (serviceProcess) {
-    return { success: false, error: 'Service is already running' }
-  }
-
-  // 优先使用传入的路径，其次使用配置
-  const settings = loadSettings()
-  const vsPath = options?.voiceServicePath || settings.voiceServicePath
-  const pyPath = options?.pythonPath || settings.pythonPath
-
-  if (!vsPath || !fs.existsSync(vsPath)) {
-    return { success: false, error: 'Voice service path not found. Please configure it in Settings.' }
-  }
-
-  const mainPy = path.join(vsPath, 'main.py')
-  if (!fs.existsSync(mainPy)) {
-    return { success: false, error: 'main.py not found in voice service directory.' }
-  }
-
-  // 优先使用 venv 中的 Python
-  let pythonExe = pyPath
-  if (!pythonExe) {
-    const venvPython = process.platform === 'win32'
-      ? path.join(vsPath, 'venv', 'Scripts', 'python.exe')
-      : path.join(vsPath, 'venv', 'bin', 'python')
-    if (fs.existsSync(venvPython)) {
-      pythonExe = venvPython
+ipcMain.handle('service:start', async () => {
+  const result = await startVoiceService()
+  if (result.success) {
+    // 等待 HTTP 端点就绪
+    const ready = await waitForService(30000)
+    if (ready) {
+      pushLog('✓ Service HTTP endpoint ready')
     } else {
-      const detected = detectPython()
-      pythonExe = detected.python || (process.platform === 'win32' ? 'python' : 'python3')
+      pushLog('⚠ Service process started but HTTP endpoint not ready yet')
     }
   }
-
-  pushLog(`Starting voice service...`)
-  pushLog(`  Python: ${pythonExe}`)
-  pushLog(`  Directory: ${vsPath}`)
-  pushLog(`  Port: 8907 (default)`)
-
-  try {
-    serviceProcess = spawn(pythonExe, ['main.py'], {
-      cwd: vsPath,
-      env: {
-        ...process.env,
-        // 确保使用默认端口 8907
-        VOICE_SERVICE_PORT: '8907',
-        // 禁用代理
-        no_proxy: 'localhost,127.0.0.1',
-        NO_PROXY: 'localhost,127.0.0.1',
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-
-    serviceProcess.stdout?.on('data', (data: Buffer) => {
-      const lines = data.toString().split('\n').filter((l: string) => l.trim())
-      lines.forEach((line: string) => pushLog(line))
-    })
-
-    serviceProcess.stderr?.on('data', (data: Buffer) => {
-      const lines = data.toString().split('\n').filter((l: string) => l.trim())
-      lines.forEach((line: string) => pushLog(`[stderr] ${line}`))
-    })
-
-    serviceProcess.on('error', (err: Error) => {
-      pushLog(`[ERROR] Process error: ${err.message}`)
-      serviceProcess = null
-    })
-
-    serviceProcess.on('exit', (code: number | null, signal: string | null) => {
-      pushLog(`Process exited (code=${code}, signal=${signal})`)
-      serviceProcess = null
-    })
-
-    // 等待 2 秒确认进程还在运行
-    await new Promise(resolve => setTimeout(resolve, 2000))
-    if (serviceProcess && !serviceProcess.killed) {
-      pushLog('✓ Voice service process started. Waiting for HTTP endpoint...')
-      return { success: true, pid: serviceProcess.pid }
-    }
-    return { success: false, error: 'Process exited immediately. Check logs.' }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    pushLog(`[ERROR] Failed to start: ${msg}`)
-    serviceProcess = null
-    return { success: false, error: msg }
-  }
+  return result
 })
 
 ipcMain.handle('service:stop', async () => {
-  if (!serviceProcess) {
-    return { success: true, message: 'Service not running' }
-  }
-  try {
-    pushLog('Stopping voice service...')
-    serviceProcess.kill('SIGTERM')
-    // 等待 3 秒，如果还没退出则 SIGKILL
-    await new Promise(resolve => setTimeout(resolve, 3000))
-    if (serviceProcess && !serviceProcess.killed) {
-      serviceProcess.kill('SIGKILL')
-    }
-    serviceProcess = null
-    pushLog('✓ Voice service stopped')
-    return { success: true }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    pushLog(`[ERROR] Failed to stop: ${msg}`)
-    return { success: false, error: msg }
-  }
+  return await stopVoiceService()
 })
 
 ipcMain.handle('service:status', async () => {
+  const running = !!(serviceProcess && !serviceProcess.killed)
+  const healthOk = running ? await checkServiceHealth() : false
   return {
-    running: !!(serviceProcess && !serviceProcess.killed),
+    running,
+    healthOk,
     pid: serviceProcess?.pid || null,
+    runtimeExists: checkRuntimeExists(),
   }
 })
 
@@ -329,43 +601,52 @@ ipcMain.handle('service:clear-logs', async () => {
   return true
 })
 
-// ─── IPC: 设置 ───
-ipcMain.handle('settings:get', async () => {
-  return loadSettings()
+// ─── IPC: 模型管理 ───
+ipcMain.handle('model:status', async () => {
+  return checkModelExists()
 })
 
-ipcMain.handle('settings:set', async (_, settings: AppSettings) => {
-  saveSettings(settings)
+ipcMain.handle('model:download', async () => {
+  const result = await downloadModel()
+  return result
+})
+
+ipcMain.handle('model:abort-download', async () => {
+  modelDownloadAborted = true
   return true
 })
 
-// ─── IPC: 目录选择 ───
-ipcMain.handle('dialog:openDirectory', async () => {
-  if (!mainWindow) return null
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openDirectory'],
-  })
-  if (result.canceled || result.filePaths.length === 0) return null
-  return result.filePaths[0]
+ipcMain.handle('model:get-download-state', async () => {
+  return {
+    ...modelDownloadState,
+    percent: modelDownloadState.totalBytes > 0
+      ? Math.round((modelDownloadState.bytesDownloaded / modelDownloadState.totalBytes) * 100)
+      : 0,
+  }
 })
 
-// ─── IPC: 在文件管理器中显示 ───
-ipcMain.handle('shell:showItemInFolder', async (_, filePath: string) => {
-  shell.showItemInFolder(filePath)
+ipcMain.handle('model:open-dir', async () => {
+  const modelDir = getModelDir()
+  if (fs.existsSync(modelDir)) {
+    shell.openPath(modelDir)
+  } else {
+    shell.openPath(path.dirname(modelDir))
+  }
   return true
 })
 
+// ─── IPC: shell ───
 ipcMain.handle('shell:openExternal', async (_, url: string) => {
   shell.openExternal(url)
   return true
 })
 
-// 单实例锁
+// ─── 单实例锁 + 自动启动 ───
 const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {
   app.quit()
 } else {
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     createWindow()
 
     app.on('activate', () => {
@@ -374,25 +655,24 @@ if (!gotTheLock) {
       }
     })
 
-    // 自动启动服务（如果配置了）
-    const settings = loadSettings()
-    if (settings.autoStartService && settings.voiceServicePath) {
-      // 延迟 1 秒启动，让窗口先渲染
-      setTimeout(() => {
-        ipcMain.emit('service:start', null, { voiceServicePath: settings.voiceServicePath, pythonPath: settings.pythonPath })
-      }, 1000)
+    // 自动启动服务
+    if (checkRuntimeExists()) {
+      pushLog('Auto-starting voice service...')
+      const result = await startVoiceService()
+      if (result.success) {
+        pushLog('✓ Voice service auto-started')
+      } else {
+        pushLog(`✗ Auto-start failed: ${result.error}`)
+      }
+    } else {
+      pushLog('⚠ Voice runtime not found, service not started')
     }
   })
 }
 
 app.on('window-all-closed', () => {
-  // 退出时停止服务
   if (serviceProcess) {
-    try {
-      serviceProcess.kill('SIGTERM')
-    } catch {
-      // ignore
-    }
+    try { serviceProcess.kill('SIGTERM') } catch {}
     serviceProcess = null
   }
   if (process.platform !== 'darwin') {
@@ -400,13 +680,9 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', () => {
+app.on('before-quit', async () => {
   if (serviceProcess) {
-    try {
-      serviceProcess.kill('SIGTERM')
-    } catch {
-      // ignore
-    }
+    try { serviceProcess.kill('SIGTERM') } catch {}
     serviceProcess = null
   }
 })
