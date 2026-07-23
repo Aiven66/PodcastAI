@@ -821,17 +821,17 @@ function render() {
   const app = document.getElementById('app')
   app.innerHTML = `
     <!-- Sidebar -->
-    <aside class="w-64 flex-shrink-0 bg-zinc-900/80 border-r border-zinc-800 flex flex-col app-drag">
-      <div class="p-5 border-b border-zinc-800">
+    <aside class="w-64 flex-shrink-0 bg-white border-r border-stone-200 flex flex-col app-drag">
+      <div class="p-5 border-b border-stone-200">
         <div class="flex items-center gap-3">
-          <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-500 to-blue-500 flex items-center justify-center">
+          <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary-600 to-purple-600 flex items-center justify-center">
             <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
               <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"></path>
             </svg>
           </div>
           <div>
-            <div class="font-bold text-lg">PodcastAI</div>
-            <div class="text-xs text-zinc-500">v${state.appVersion.version}</div>
+            <div class="font-bold text-lg gradient-text">PodcastAI</div>
+            <div class="text-xs text-stone-400">v${state.appVersion.version}</div>
           </div>
         </div>
       </div>
@@ -844,20 +844,20 @@ function render() {
       </nav>
 
       <!-- Service status -->
-      <div class="p-4 border-t border-zinc-800 app-no-drag">
-        <div class="text-xs text-zinc-500 mb-2">${t('serviceStatus')}</div>
+      <div class="p-4 border-t border-stone-200 app-no-drag">
+        <div class="text-xs text-stone-400 mb-2">${t('serviceStatus')}</div>
         <div class="flex items-center gap-2">
           <div class="w-2 h-2 rounded-full pulse-dot ${serviceStatusColor()}"></div>
           <span class="text-sm">${serviceStatusLabel()}</span>
         </div>
-        <div class="text-xs text-zinc-600 mt-1 truncate">${state.serviceUrl}</div>
+        <div class="text-xs text-stone-500 mt-1 truncate">${state.serviceUrl}</div>
       </div>
 
       <!-- Language switcher -->
-      <div class="p-4 border-t border-zinc-800 app-no-drag">
-        <div class="flex gap-1 bg-zinc-800/50 rounded-lg p-1">
-          <button onclick="setLocale('zh')" class="flex-1 py-1.5 text-xs rounded-md transition ${state.locale === 'zh' ? 'bg-primary-600 text-white' : 'text-zinc-400 hover:text-white'}">${t('chinese')}</button>
-          <button onclick="setLocale('en')" class="flex-1 py-1.5 text-xs rounded-md transition ${state.locale === 'en' ? 'bg-primary-600 text-white' : 'text-zinc-400 hover:text-white'}">${t('english')}</button>
+      <div class="p-4 border-t border-stone-200 app-no-drag">
+        <div class="flex gap-1 bg-stone-100 rounded-lg p-1">
+          <button onclick="setLocale('zh')" class="flex-1 py-1.5 text-xs rounded-md transition ${state.locale === 'zh' ? 'bg-primary-600 text-white' : 'text-stone-500 hover:text-primary-700'}">${t('chinese')}</button>
+          <button onclick="setLocale('en')" class="flex-1 py-1.5 text-xs rounded-md transition ${state.locale === 'en' ? 'bg-primary-600 text-white' : 'text-stone-500 hover:text-primary-700'}">${t('english')}</button>
         </div>
       </div>
     </aside>
@@ -878,17 +878,17 @@ function renderOfflineBanner() {
   // v1.0.4: 服务由 main.ts 自动启动；如果进程已运行但 HTTP 还未就绪，提示"正在启动"
   const isAutoStarting = sm.processRunning && state.serviceStatus === 'offline'
   return `
-    <div class="bg-amber-500/10 border-b border-amber-500/30 px-6 py-3 flex items-center justify-between gap-4">
+    <div class="bg-amber-50 border-b border-amber-200 px-6 py-3 flex items-center justify-between gap-4">
       <div class="flex items-center gap-3 flex-1 min-w-0">
         <div class="w-2 h-2 rounded-full bg-amber-500 pulse-dot shrink-0"></div>
-        <div class="text-sm text-amber-300 truncate">
+        <div class="text-sm text-amber-800 truncate">
           ${isAutoStarting ? t('serviceAutoStarting') : t('offlineBanner')}
-          ${sm.processRunning ? ` · <span class="text-amber-200">${t('serviceRunning')} (PID ${sm.processPid})</span>` : ''}
+          ${sm.processRunning ? ` · <span class="text-amber-700">${t('serviceRunning')} (PID ${sm.processPid})</span>` : ''}
         </div>
       </div>
       <div class="flex items-center gap-2 shrink-0">
         ${isAutoStarting ? '' : `
-          <button onclick="startServiceAction()" disabled="${sm.isStarting}" class="px-3 py-1.5 text-xs bg-primary-600 hover:bg-primary-500 disabled:opacity-50 text-white rounded-md transition flex items-center gap-1.5">
+          <button onclick="startServiceAction()" disabled="${sm.isStarting}" class="px-3 py-1.5 text-xs bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white rounded-md transition flex items-center gap-1.5">
             ${sm.isStarting ? `
               <svg class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
               ${t('startingService')}
@@ -898,7 +898,7 @@ function renderOfflineBanner() {
             `}
           </button>
         `}
-        <button onclick="switchView('settings')" class="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-md transition">
+        <button onclick="switchView('settings')" class="px-3 py-1.5 text-xs bg-stone-100 hover:bg-stone-200 text-stone-600 rounded-md transition">
           ${t('goToSettings')}
         </button>
       </div>
@@ -909,7 +909,7 @@ function renderOfflineBanner() {
 function renderNavItem(view, iconPath, label) {
   const isActive = state.activeView === view
   return `
-    <button onclick="switchView('${view}')" class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition ${isActive ? 'bg-primary-600 text-white' : 'text-zinc-400 hover:text-white hover:bg-zinc-800/50'}">
+    <button onclick="switchView('${view}')" class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition ${isActive ? 'bg-primary-50 text-primary-700' : 'text-stone-500 hover:bg-stone-100'}">
       <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
         <path d="${iconPath}"></path>
       </svg>
@@ -923,7 +923,7 @@ function serviceStatusColor() {
     case 'online': return 'bg-green-500'
     case 'busy': return 'bg-amber-500'
     case 'offline': return 'bg-red-500'
-    default: return 'bg-zinc-500'
+    default: return 'bg-stone-400'
   }
 }
 
@@ -954,13 +954,13 @@ function renderPodcastView() {
     <div class="max-w-5xl mx-auto p-8">
       <div class="mb-8">
         <h1 class="text-3xl font-bold mb-2">${t('podcastTitle')}</h1>
-        <p class="text-zinc-400">${t('podcastSubtitle')}</p>
+        <p class="text-stone-500">${t('podcastSubtitle')}</p>
       </div>
 
       <!-- Input method tabs -->
       <div class="mb-6">
-        <div class="text-sm text-zinc-500 mb-2">${t('inputMethod')}</div>
-        <div class="flex gap-2 bg-zinc-900/60 p-1 rounded-xl border border-zinc-800 w-fit">
+        <div class="text-sm text-stone-400 mb-2">${t('inputMethod')}</div>
+        <div class="flex gap-2 bg-white/80 p-1 rounded-xl border border-stone-200 w-fit">
           ${renderInputMethodTab('url', 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71', t('inputUrl'))}
           ${renderInputMethodTab('text', 'M4 6h16M4 12h16M4 18h7', t('inputText'))}
           ${renderInputMethodTab('file', 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6', t('inputFile'))}
@@ -973,27 +973,27 @@ function renderPodcastView() {
       </div>
 
       <!-- Options -->
-      <div class="mb-6 bg-zinc-900/60 rounded-xl border border-zinc-800 p-5">
-        <h3 class="text-sm font-semibold mb-4 text-zinc-300">${t('podcastOptions')}</h3>
+      <div class="mb-6 bg-white/80 rounded-xl border border-stone-200 p-5">
+        <h3 class="text-sm font-semibold mb-4 text-stone-600">${t('podcastOptions')}</h3>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <div>
-            <label class="block text-xs text-zinc-500 mb-2">${t('podcastType')}</label>
+            <label class="block text-xs text-stone-400 mb-2">${t('podcastType')}</label>
             <div class="flex gap-2">
-              <button onclick="setPodcastType('single')" class="flex-1 px-3 py-2 text-sm rounded-lg border transition ${state.podcastType === 'single' ? 'border-primary-500 bg-primary-500/10 text-primary-300' : 'border-zinc-700 text-zinc-400 hover:border-zinc-600'}">${t('singleHost')}</button>
-              <button onclick="setPodcastType('dual')" class="flex-1 px-3 py-2 text-sm rounded-lg border transition ${state.podcastType === 'dual' ? 'border-primary-500 bg-primary-500/10 text-primary-300' : 'border-zinc-700 text-zinc-400 hover:border-zinc-600'}">${t('dualHost')}</button>
+              <button onclick="setPodcastType('single')" class="flex-1 px-3 py-2 text-sm rounded-lg border transition ${state.podcastType === 'single' ? 'border-primary-600 bg-primary-50 text-primary-700' : 'border-stone-300 text-stone-500 hover:border-stone-400'}">${t('singleHost')}</button>
+              <button onclick="setPodcastType('dual')" class="flex-1 px-3 py-2 text-sm rounded-lg border transition ${state.podcastType === 'dual' ? 'border-primary-600 bg-primary-50 text-primary-700' : 'border-stone-300 text-stone-500 hover:border-stone-400'}">${t('dualHost')}</button>
             </div>
           </div>
         </div>
 
         <div class="grid grid-cols-1 ${state.podcastType === 'dual' ? 'md:grid-cols-2' : ''} gap-4">
           <div>
-            <label class="block text-xs text-zinc-500 mb-2">${t('voiceHost')}</label>
+            <label class="block text-xs text-stone-400 mb-2">${t('voiceHost')}</label>
             ${renderVoiceSelect('voice1')}
           </div>
           ${state.podcastType === 'dual' ? `
             <div>
-              <label class="block text-xs text-zinc-500 mb-2">${t('voiceGuest')}</label>
+              <label class="block text-xs text-stone-400 mb-2">${t('voiceGuest')}</label>
               ${renderVoiceSelect('voice2')}
             </div>
           ` : ''}
@@ -1001,7 +1001,7 @@ function renderPodcastView() {
       </div>
 
       <!-- Generate button -->
-      <button onclick="generatePodcast()" disabled="${state.isGenerating}" class="w-full py-3.5 rounded-xl bg-gradient-to-r from-primary-600 to-blue-600 hover:from-primary-500 hover:to-blue-500 text-white font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+      <button onclick="generatePodcast()" disabled="${state.isGenerating}" class="w-full py-3.5 rounded-xl bg-gradient-to-r from-primary-600 to-purple-600 hover:from-primary-500 hover:to-purple-500 text-white font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
         ${state.isGenerating ? `
           <svg class="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -1026,7 +1026,7 @@ function renderPodcastView() {
 function renderInputMethodTab(method, iconPath, label) {
   const isActive = state.inputMethod === method
   return `
-    <button onclick="setInputMethod('${method}')" class="flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition ${isActive ? 'bg-primary-600 text-white' : 'text-zinc-400 hover:text-white'}">
+    <button onclick="setInputMethod('${method}')" class="flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition ${isActive ? 'bg-primary-600 text-white' : 'text-stone-500 hover:text-primary-700'}">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
         <path d="${iconPath}"></path>
       </svg>
@@ -1039,35 +1039,35 @@ function renderInputArea() {
   switch (state.inputMethod) {
     case 'url':
       return `
-        <label class="block text-sm text-zinc-500 mb-2">${t('urlLabel')}</label>
-        <input type="url" value="${escapeHtml(state.urlInput)}" oninput="state.urlInput = this.value" placeholder="${t('urlPlaceholder')}" class="w-full px-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl text-white placeholder-zinc-600 focus:border-primary-500 focus:outline-none transition">
+        <label class="block text-sm text-stone-400 mb-2">${t('urlLabel')}</label>
+        <input type="url" value="${escapeHtml(state.urlInput)}" oninput="state.urlInput = this.value" placeholder="${t('urlPlaceholder')}" class="w-full px-4 py-3 bg-white border border-stone-200 rounded-xl text-stone-900 placeholder-stone-400 focus:border-primary-600 focus:outline-none transition">
       `
     case 'text':
       return `
-        <label class="block text-sm text-zinc-500 mb-2">${t('textLabel')}</label>
-        <textarea oninput="state.textInput = this.value" placeholder="${t('textPlaceholder')}" class="w-full px-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl text-white placeholder-zinc-600 focus:border-primary-500 focus:outline-none transition resize-y" rows="8">${escapeHtml(state.textInput)}</textarea>
+        <label class="block text-sm text-stone-400 mb-2">${t('textLabel')}</label>
+        <textarea oninput="state.textInput = this.value" placeholder="${t('textPlaceholder')}" class="w-full px-4 py-3 bg-white border border-stone-200 rounded-xl text-stone-900 placeholder-stone-400 focus:border-primary-600 focus:outline-none transition resize-y" rows="8">${escapeHtml(state.textInput)}</textarea>
       `
     case 'file':
       return `
-        <label class="block text-sm text-zinc-500 mb-2">${t('fileLabel')}</label>
-        <div onclick="document.getElementById('file-input').click()" class="border-2 border-dashed border-zinc-700 hover:border-primary-500 rounded-xl p-8 text-center cursor-pointer transition">
+        <label class="block text-sm text-stone-400 mb-2">${t('fileLabel')}</label>
+        <div onclick="document.getElementById('file-input').click()" class="border-2 border-dashed border-stone-300 hover:border-primary-600 rounded-xl p-8 text-center cursor-pointer transition">
           ${state.uploadedFile ? `
-            <div class="text-primary-400 mb-2">
+            <div class="text-primary-600 mb-2">
               <svg class="w-10 h-10 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
                 <path d="M9 12l2 2 4-4m6 2a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"></path>
               </svg>
             </div>
             <div class="text-sm font-medium">${escapeHtml(state.uploadedFile.name)}</div>
-            <div class="text-xs text-zinc-500 mt-1">${(state.uploadedFile.size / 1024 / 1024).toFixed(2)} MB</div>
-            <div class="text-xs text-primary-400 mt-2">${t('fileChange')}</div>
+            <div class="text-xs text-stone-400 mt-1">${(state.uploadedFile.size / 1024 / 1024).toFixed(2)} MB</div>
+            <div class="text-xs text-primary-600 mt-2">${t('fileChange')}</div>
           ` : `
-            <div class="text-zinc-500 mb-2">
+            <div class="text-stone-400 mb-2">
               <svg class="w-10 h-10 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
                 <path d="M7 16a4 4 0 0 1-.88-7.903A5 5 0 1 1 15.9 6L16 6a5 5 0 0 1 0 10H7zm5-4V4m0 0L8 8m4-4l4 4"></path>
               </svg>
             </div>
             <div class="text-sm">${t('fileDropHint')}</div>
-            <div class="text-xs text-zinc-500 mt-1">${t('fileSupported')}</div>
+            <div class="text-xs text-stone-400 mt-1">${t('fileSupported')}</div>
           `}
         </div>
         <input id="file-input" type="file" accept=".txt,.md,.markdown,.pdf,.doc,.docx" class="hidden" onchange="handleFileUpload(this.files[0])">
@@ -1081,7 +1081,7 @@ function renderVoiceSelect(target) {
   const cloneVoices = state.clones
 
   return `
-    <select onchange="state.${target} = this.value" class="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-white text-sm focus:border-primary-500 focus:outline-none">
+    <select onchange="state.${target} = this.value" class="w-full px-3 py-2 bg-white border border-stone-200 rounded-lg text-stone-900 text-sm focus:border-primary-600 focus:outline-none">
       <optgroup label="${t('systemVoice')}">
         ${systemVoices.map(v => `<option value="${v.id}" ${currentValue === v.id ? 'selected' : ''}>${voiceName(v)}</option>`).join('')}
       </optgroup>
@@ -1100,13 +1100,13 @@ function renderProgress() {
   const stageText = stage === 'script' ? t('scriptGenerating') : (stage === 'synth' ? t('segmentProgress', { current, total }) : t('audioSynthesizing'))
 
   return `
-    <div class="mt-4 p-4 bg-zinc-900/60 rounded-xl border border-zinc-800">
+    <div class="mt-4 p-4 bg-white/80 rounded-xl border border-stone-200">
       <div class="flex items-center justify-between mb-2">
-        <div class="text-sm text-zinc-300">${stageText}</div>
-        <div class="text-sm text-primary-400">${percent}%</div>
+        <div class="text-sm text-stone-600">${stageText}</div>
+        <div class="text-sm text-primary-600">${percent}%</div>
       </div>
-      <div class="h-2 bg-zinc-800 rounded-full overflow-hidden">
-        <div class="h-full bg-gradient-to-r from-primary-500 to-blue-500 rounded-full transition-all" style="width: ${percent}%"></div>
+      <div class="h-2 bg-stone-100 rounded-full overflow-hidden">
+        <div class="h-full bg-gradient-to-r from-primary-600 to-purple-600 rounded-full transition-all" style="width: ${percent}%"></div>
       </div>
     </div>
   `
@@ -1116,13 +1116,13 @@ function renderScriptPreview() {
   return `
     <div class="mt-6">
       <div class="flex items-center justify-between mb-2">
-        <h3 class="text-sm font-semibold text-zinc-300">${t('scriptPreview')}</h3>
-        <span class="text-xs text-zinc-500">${state.scriptText.length} ${t('words')}</span>
+        <h3 class="text-sm font-semibold text-stone-600">${t('scriptPreview')}</h3>
+        <span class="text-xs text-stone-400">${state.scriptText.length} ${t('words')}</span>
       </div>
-      <textarea onchange="state.scriptText = this.value" class="w-full px-4 py-3 bg-zinc-900 border border-zinc-800 rounded-xl text-white text-sm focus:border-primary-500 focus:outline-none resize-y" rows="10">${escapeHtml(state.scriptText)}</textarea>
-      <div class="text-xs text-zinc-500 mt-1">${t('scriptEditHint')}</div>
+      <textarea onchange="state.scriptText = this.value" class="w-full px-4 py-3 bg-white border border-stone-200 rounded-xl text-stone-900 text-sm focus:border-primary-600 focus:outline-none resize-y" rows="10">${escapeHtml(state.scriptText)}</textarea>
+      <div class="text-xs text-stone-400 mt-1">${t('scriptEditHint')}</div>
       <div class="flex gap-2 mt-2">
-        <button onclick="synthesizeOnly()" class="px-4 py-2 text-sm bg-zinc-800 hover:bg-zinc-700 rounded-lg transition">${t('regenerate')}</button>
+        <button onclick="synthesizeOnly()" class="px-4 py-2 text-sm bg-stone-100 hover:bg-stone-200 rounded-lg transition">${t('regenerate')}</button>
       </div>
     </div>
   `
@@ -1130,10 +1130,10 @@ function renderScriptPreview() {
 
 function renderAudioPlayer() {
   return `
-    <div class="mt-6 p-5 bg-gradient-to-br from-zinc-900 to-zinc-900/60 rounded-xl border border-zinc-800">
+    <div class="mt-6 p-5 bg-gradient-to-br from-primary-50 to-purple-50 rounded-xl border border-stone-200">
       <div class="flex items-center justify-between mb-3">
         <h3 class="text-sm font-semibold">${t('audioPlayer')}</h3>
-        <a href="${state.audioUrl}" download="podcast-${Date.now()}.wav" class="text-xs text-primary-400 hover:text-primary-300 flex items-center gap-1">
+        <a href="${state.audioUrl}" download="podcast-${Date.now()}.wav" class="text-xs text-primary-600 hover:text-primary-700 flex items-center gap-1">
           <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
           ${t('download')}
         </a>
@@ -1147,69 +1147,116 @@ function renderAudioPlayer() {
 // 视图：声音克隆
 // ════════════════════════════════════════════════════════════
 function renderCloneView() {
+  const modelReady = !!(state.model && state.model.status && state.model.status.ready)
+  const modelDownloading = !!(state.model && state.model.downloadState && state.model.downloadState.isDownloading)
+  const modelPercent = (state.model && state.model.downloadState && state.model.downloadState.percent) || 0
+  const canClone = modelReady && !modelDownloading
+
   return `
     <div class="max-w-5xl mx-auto p-8">
       <div class="mb-8">
         <h1 class="text-3xl font-bold mb-2">${t('cloneTitle')}</h1>
-        <p class="text-zinc-400">${t('cloneSubtitle')}</p>
+        <p class="text-stone-500">${t('cloneSubtitle')}</p>
       </div>
+
+      <!-- 模型状态引导卡片 -->
+      ${!modelReady ? `
+        <div class="mb-6 rounded-xl border ${modelDownloading ? 'border-primary-200 bg-primary-50' : 'border-amber-200 bg-amber-50'} p-4">
+          <div class="flex items-start gap-3">
+            <div class="flex-shrink-0 mt-0.5">
+              ${modelDownloading ? `
+                <svg class="w-5 h-5 text-primary-600 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                </svg>
+              ` : `
+                <svg class="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+                </svg>
+              `}
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium ${modelDownloading ? 'text-primary-900' : 'text-amber-900'}">
+                ${modelDownloading ? `模型下载中 ${modelPercent}%` : '模型未下载'}
+              </div>
+              <div class="text-xs ${modelDownloading ? 'text-primary-700' : 'text-amber-700'} mt-1">
+                ${modelDownloading ? '声音克隆功能需要等待 CosyVoice2 模型下载完成后才能使用' : '声音克隆需要 CosyVoice2 模型，正在自动下载中...'}
+              </div>
+              ${modelDownloading ? `
+                <div class="mt-2 h-2 bg-primary-100 rounded-full overflow-hidden">
+                  <div class="h-full bg-primary-600 rounded-full transition-all" style="width: ${modelPercent}%"></div>
+                </div>
+              ` : ''}
+            </div>
+          </div>
+        </div>
+      ` : `
+        <div class="mb-6 rounded-xl border border-green-200 bg-green-50 p-4">
+          <div class="flex items-center gap-3">
+            <svg class="w-5 h-5 text-green-600 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>
+            <div class="text-sm font-medium text-green-900">${t('modelReady')}</div>
+          </div>
+        </div>
+      `}
 
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <!-- Clone form -->
-        <div class="bg-zinc-900/60 rounded-xl border border-zinc-800 p-6 space-y-4">
+        <div class="bg-white/80 rounded-xl border border-stone-200 p-6 space-y-4">
           <div>
-            <label class="block text-sm text-zinc-500 mb-2">${t('cloneName')} *</label>
-            <input type="text" value="${escapeHtml(state.cloneName)}" oninput="state.cloneName = this.value" placeholder="${t('cloneNamePlaceholder')}" class="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-white text-sm focus:border-primary-500 focus:outline-none">
+            <label class="block text-sm text-stone-500 mb-2">${t('cloneName')} *</label>
+            <input type="text" value="${escapeHtml(state.cloneName)}" oninput="state.cloneName = this.value" placeholder="${t('cloneNamePlaceholder')}" class="w-full px-3 py-2 bg-white border border-stone-200 rounded-lg text-stone-900 text-sm focus:border-primary-600 focus:outline-none">
           </div>
 
           <div>
-            <label class="block text-sm text-zinc-500 mb-2">${t('cloneGender')}</label>
+            <label class="block text-sm text-stone-500 mb-2">${t('cloneGender')}</label>
             <div class="flex gap-2">
-              <button onclick="state.cloneGender = ''" class="flex-1 py-2 text-sm rounded-lg border transition ${state.cloneGender === '' ? 'border-primary-500 bg-primary-500/10 text-primary-300' : 'border-zinc-700 text-zinc-400'}">${t('cloneGenderAuto')}</button>
-              <button onclick="state.cloneGender = 'male'" class="flex-1 py-2 text-sm rounded-lg border transition ${state.cloneGender === 'male' ? 'border-primary-500 bg-primary-500/10 text-primary-300' : 'border-zinc-700 text-zinc-400'}">${t('cloneGenderMale')}</button>
-              <button onclick="state.cloneGender = 'female'" class="flex-1 py-2 text-sm rounded-lg border transition ${state.cloneGender === 'female' ? 'border-primary-500 bg-primary-500/10 text-primary-300' : 'border-zinc-700 text-zinc-400'}">${t('cloneGenderFemale')}</button>
+              <button onclick="state.cloneGender = ''" class="flex-1 py-2 text-sm rounded-lg border transition ${state.cloneGender === '' ? 'border-primary-600 bg-primary-50 text-primary-700' : 'border-stone-300 text-stone-500'}">${t('cloneGenderAuto')}</button>
+              <button onclick="state.cloneGender = 'male'" class="flex-1 py-2 text-sm rounded-lg border transition ${state.cloneGender === 'male' ? 'border-primary-600 bg-primary-50 text-primary-700' : 'border-stone-300 text-stone-500'}">${t('cloneGenderMale')}</button>
+              <button onclick="state.cloneGender = 'female'" class="flex-1 py-2 text-sm rounded-lg border transition ${state.cloneGender === 'female' ? 'border-primary-600 bg-primary-50 text-primary-700' : 'border-stone-300 text-stone-500'}">${t('cloneGenderFemale')}</button>
             </div>
           </div>
 
           <div>
-            <label class="block text-sm text-zinc-500 mb-2">${t('cloneDescription')}</label>
-            <input type="text" value="${escapeHtml(state.cloneDescription)}" oninput="state.cloneDescription = this.value" placeholder="${t('cloneDescriptionPlaceholder')}" class="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-white text-sm focus:border-primary-500 focus:outline-none">
+            <label class="block text-sm text-stone-500 mb-2">${t('cloneDescription')}</label>
+            <input type="text" value="${escapeHtml(state.cloneDescription)}" oninput="state.cloneDescription = this.value" placeholder="${t('cloneDescriptionPlaceholder')}" class="w-full px-3 py-2 bg-white border border-stone-200 rounded-lg text-stone-900 text-sm focus:border-primary-600 focus:outline-none">
           </div>
 
           <div>
-            <label class="block text-sm text-zinc-500 mb-2">${t('clonePromptText')}</label>
-            <textarea value="${escapeHtml(state.clonePromptText)}" oninput="state.clonePromptText = this.value" placeholder="${t('clonePromptPlaceholder')}" class="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-white text-sm focus:border-primary-500 focus:outline-none resize-y" rows="3">${escapeHtml(state.clonePromptText)}</textarea>
+            <label class="block text-sm text-stone-500 mb-2">${t('clonePromptText')}</label>
+            <textarea value="${escapeHtml(state.clonePromptText)}" oninput="state.clonePromptText = this.value" placeholder="${t('clonePromptPlaceholder')}" class="w-full px-3 py-2 bg-white border border-stone-200 rounded-lg text-stone-900 text-sm focus:border-primary-600 focus:outline-none resize-y" rows="3">${escapeHtml(state.clonePromptText)}</textarea>
           </div>
 
           <div>
-            <label class="block text-sm text-zinc-500 mb-2">${t('cloneAudioFile')} *</label>
-            <div onclick="document.getElementById('clone-audio-input').click()" class="border-2 border-dashed border-zinc-700 hover:border-primary-500 rounded-lg p-4 text-center cursor-pointer transition">
+            <label class="block text-sm text-stone-500 mb-2">${t('cloneAudioFile')} *</label>
+            <div onclick="document.getElementById('clone-audio-input').click()" class="border-2 border-dashed border-stone-300 hover:border-primary-600 rounded-lg p-4 text-center cursor-pointer transition">
               ${state.cloneAudioFile ? `
-                <div class="text-sm font-medium text-primary-400">${escapeHtml(state.cloneAudioFile.name)}</div>
-                <div class="text-xs text-zinc-500 mt-1">${(state.cloneAudioFile.size / 1024 / 1024).toFixed(2)} MB</div>
+                <div class="text-sm font-medium text-primary-600">${escapeHtml(state.cloneAudioFile.name)}</div>
+                <div class="text-xs text-stone-500 mt-1">${(state.cloneAudioFile.size / 1024 / 1024).toFixed(2)} MB</div>
               ` : `
-                <div class="text-xs text-zinc-500">${t('cloneAudioHint')}</div>
+                <div class="text-xs text-stone-500">${t('cloneAudioHint')}</div>
               `}
             </div>
             <input id="clone-audio-input" type="file" accept="audio/wav,audio/mp3,audio/m4a,audio/aac,audio/*" class="hidden" onchange="handleCloneAudioUpload(this.files[0])">
           </div>
 
-          <button onclick="createCloneAction()" disabled="${state.isCloning}" class="w-full py-3 rounded-xl bg-gradient-to-r from-primary-600 to-blue-600 hover:from-primary-500 hover:to-blue-500 text-white font-semibold transition disabled:opacity-50 flex items-center justify-center gap-2">
+          <button onclick="${state.isCloning ? '' : (canClone ? 'createCloneAction()' : 'switchView(\\'settings\\')')}"
+                  disabled="${state.isCloning}"
+                  class="w-full py-3 rounded-xl ${canClone ? 'bg-gradient-to-r from-primary-600 to-purple-600 hover:from-primary-500 hover:to-purple-500 text-white' : 'bg-stone-200 text-stone-500 hover:bg-stone-300'} font-semibold transition flex items-center justify-center gap-2">
             ${state.isCloning ? `
               <svg class="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4z"></path>
               </svg>
               ${t('cloning')}
-            ` : t('startClone')}
+            ` : modelDownloading ? `模型下载中 ${modelPercent}%` : !modelReady ? '请先下载模型' : t('startClone')}
           </button>
         </div>
 
         <!-- Clone list -->
-        <div class="bg-zinc-900/60 rounded-xl border border-zinc-800 p-6">
+        <div class="bg-white/80 rounded-xl border border-stone-200 p-6">
           <h3 class="text-sm font-semibold mb-4">${t('cloneListTitle')} (${state.clones.length})</h3>
           ${state.clones.length === 0 ? `
-            <div class="text-center py-12 text-zinc-500">
+            <div class="text-center py-12 text-stone-400">
               <svg class="w-12 h-12 mx-auto mb-3 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
                 <path d="M12 20.94c1.5 0 2.75 1.06 4 1.06 3 0 6-8 6-12.22A4.91 4.91 0 0 0 17 5c-2.22 0-4 1.44-5 2-1-.56-2.78-2-5-2a4.9 4.9 0 0 0-5 4.78C2 14 5 22 8 22c1.25 0 2.5-1.06 4-1.06Z"></path>
               </svg>
@@ -1229,22 +1276,22 @@ function renderCloneView() {
 function renderCloneItem(clone) {
   const isPlaying = state.previewPlayingId === clone.id
   return `
-    <div class="flex items-center justify-between p-3 bg-zinc-900 rounded-lg border border-zinc-800 hover:border-zinc-700 transition">
+    <div class="flex items-center justify-between p-3 bg-white rounded-lg border border-stone-200 hover:border-stone-300 transition">
       <div class="flex-1 min-w-0">
         <div class="text-sm font-medium truncate">${escapeHtml(clone.name)}</div>
-        <div class="text-xs text-zinc-500 mt-0.5">
+        <div class="text-xs text-stone-400 mt-0.5">
           ${clone.gender === 'male' ? t('cloneGenderMale') : t('cloneGenderFemale')} · ${formatDate((clone.created_at || 0) * 1000)}
         </div>
       </div>
       <div class="flex items-center gap-1">
-        <button onclick="previewClone('${clone.id}')" class="p-2 text-zinc-400 hover:text-primary-400 transition" title="${t('clonePreview')}">
+        <button onclick="previewClone('${clone.id}')" class="p-2 text-stone-500 hover:text-primary-600 transition" title="${t('clonePreview')}">
           ${isPlaying ? `
             <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"></path></svg>
           ` : `
             <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"></path></svg>
           `}
         </button>
-        <button onclick="deleteClone('${clone.id}')" class="p-2 text-zinc-400 hover:text-red-400 transition" title="${t('cloneDelete')}">
+        <button onclick="deleteClone('${clone.id}')" class="p-2 text-stone-500 hover:text-red-400 transition" title="${t('cloneDelete')}">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M19 7l-.867 12.142A2 2 0 0 1 16.138 21H7.862a2 2 0 0 1-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v3M4 7h16"></path></svg>
         </button>
       </div>
@@ -1261,7 +1308,7 @@ function renderHistoryView() {
       <div class="flex items-center justify-between mb-8">
         <div>
           <h1 class="text-3xl font-bold mb-2">${t('historyTitle')}</h1>
-          <p class="text-zinc-400 text-sm">${state.history.length} ${state.locale === 'zh' ? '条记录' : 'records'}</p>
+          <p class="text-stone-500 text-sm">${state.history.length} ${state.locale === 'zh' ? '条记录' : 'records'}</p>
         </div>
         ${state.history.length > 0 ? `
           <button onclick="clearAllHistory()" class="px-3 py-1.5 text-sm text-red-400 hover:text-red-300 border border-red-500/30 hover:border-red-500/50 rounded-lg transition">${t('historyClearAll')}</button>
@@ -1269,7 +1316,7 @@ function renderHistoryView() {
       </div>
 
       ${state.history.length === 0 ? `
-        <div class="text-center py-20 text-zinc-500">
+        <div class="text-center py-20 text-stone-400">
           <svg class="w-16 h-16 mx-auto mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
             <path d="M12 8v4l3 3m6-3a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"></path>
           </svg>
@@ -1286,31 +1333,31 @@ function renderHistoryView() {
 
 function renderHistoryItem(item) {
   return `
-    <div class="bg-zinc-900/60 rounded-xl border border-zinc-800 p-4 hover:border-zinc-700 transition">
+    <div class="bg-white/80 rounded-xl border border-stone-200 p-4 hover:border-stone-300 transition">
       <div class="flex items-start justify-between mb-2">
         <div class="flex-1 min-w-0">
           <div class="font-medium truncate">${escapeHtml(item.title || 'Untitled')}</div>
-          <div class="text-xs text-zinc-500 mt-1">
+          <div class="text-xs text-stone-400 mt-1">
             ${formatDate(item.createdAt)} · ${item.duration || 0}s · ${item.script.length} ${t('words')}
           </div>
         </div>
         <div class="flex items-center gap-1 ml-2">
           ${item.audioUrl ? `
-            <button onclick="playHistoryAudio('${item.id}')" class="p-2 text-zinc-400 hover:text-primary-400 transition" title="${t('historyPlay')}">
+            <button onclick="playHistoryAudio('${item.id}')" class="p-2 text-stone-500 hover:text-primary-600 transition" title="${t('historyPlay')}">
               <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"></path></svg>
             </button>
-            <a href="${item.audioUrl}" download="podcast-${item.id}.wav" class="p-2 text-zinc-400 hover:text-primary-400 transition" title="${t('historyDownload')}">
+            <a href="${item.audioUrl}" download="podcast-${item.id}.wav" class="p-2 text-stone-500 hover:text-primary-600 transition" title="${t('historyDownload')}">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
             </a>
           ` : ''}
-          <button onclick="deleteHistory('${item.id}')" class="p-2 text-zinc-400 hover:text-red-400 transition" title="${t('historyDelete')}">
+          <button onclick="deleteHistory('${item.id}')" class="p-2 text-stone-500 hover:text-red-400 transition" title="${t('historyDelete')}">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M19 7l-.867 12.142A2 2 0 0 1 16.138 21H7.862a2 2 0 0 1-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v3M4 7h16"></path></svg>
           </button>
         </div>
       </div>
-      <details class="text-sm text-zinc-400">
-        <summary class="cursor-pointer hover:text-zinc-300">${t('historyScript')}</summary>
-        <div class="mt-2 p-3 bg-zinc-900 rounded-lg text-xs whitespace-pre-wrap max-h-48 overflow-y-auto">${escapeHtml(item.script)}</div>
+      <details class="text-sm text-stone-500">
+        <summary class="cursor-pointer hover:text-stone-600">${t('historyScript')}</summary>
+        <div class="mt-2 p-3 bg-white rounded-lg text-xs whitespace-pre-wrap max-h-48 overflow-y-auto">${escapeHtml(item.script)}</div>
       </details>
     </div>
   `
@@ -1330,11 +1377,11 @@ function renderSettingsView() {
       </div>
 
       <!-- Language -->
-      <div class="bg-zinc-900/60 rounded-xl border border-zinc-800 p-5 mb-4">
+      <div class="bg-white/80 rounded-xl border border-stone-200 p-5 mb-4">
         <h3 class="text-sm font-semibold mb-3">${t('settingsLanguage')}</h3>
         <div class="flex gap-2">
-          <button onclick="setLocale('zh')" class="flex-1 py-2 text-sm rounded-lg border transition ${state.locale === 'zh' ? 'border-primary-500 bg-primary-500/10 text-primary-300' : 'border-zinc-700 text-zinc-400'}">${t('chinese')}</button>
-          <button onclick="setLocale('en')" class="flex-1 py-2 text-sm rounded-lg border transition ${state.locale === 'en' ? 'border-primary-500 bg-primary-500/10 text-primary-300' : 'border-zinc-700 text-zinc-400'}">${t('english')}</button>
+          <button onclick="setLocale('zh')" class="flex-1 py-2 text-sm rounded-lg border transition ${state.locale === 'zh' ? 'border-primary-600 bg-primary-50 text-primary-700' : 'border-stone-300 text-stone-500'}">${t('chinese')}</button>
+          <button onclick="setLocale('en')" class="flex-1 py-2 text-sm rounded-lg border transition ${state.locale === 'en' ? 'border-primary-600 bg-primary-50 text-primary-700' : 'border-stone-300 text-stone-500'}">${t('english')}</button>
         </div>
       </div>
 
@@ -1342,13 +1389,13 @@ function renderSettingsView() {
       ${renderModelManager()}
 
       <!-- Service Manager -->
-      <div class="bg-zinc-900/60 rounded-xl border border-zinc-800 p-5 mb-4">
+      <div class="bg-white/80 rounded-xl border border-stone-200 p-5 mb-4">
         <div class="flex items-start justify-between mb-3">
           <div>
             <h3 class="text-sm font-semibold">${t('serviceManager')}</h3>
-            <p class="text-xs text-zinc-500 mt-1">${t('serviceManagerDesc')}</p>
+            <p class="text-xs text-stone-400 mt-1">${t('serviceManagerDesc')}</p>
           </div>
-          <button onclick="detectServiceEnvironment()" class="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-md transition flex items-center gap-1.5">
+          <button onclick="detectServiceEnvironment()" class="px-3 py-1.5 text-xs bg-stone-100 hover:bg-stone-200 text-stone-600 rounded-md transition flex items-center gap-1.5">
             ${sm.detecting ? `
               <svg class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
               ${t('detecting')}
@@ -1358,14 +1405,14 @@ function renderSettingsView() {
 
         <!-- Detection result -->
         ${d ? renderServiceDetectionResult(d) : `
-          <div class="text-center py-6 text-zinc-500 text-sm">
+          <div class="text-center py-6 text-stone-400 text-sm">
             ${t('detected')} — ${t('detectEnvironment')}
           </div>
         `}
 
         <!-- Service controls -->
         ${d && d.voiceServicePath ? `
-          <div class="mt-4 pt-4 border-t border-zinc-800 space-y-3">
+          <div class="mt-4 pt-4 border-t border-stone-200 space-y-3">
             <div class="flex items-center gap-2">
               ${sm.processRunning ? `
                 <button onclick="stopServiceAction()" disabled="${sm.isStopping}" class="px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white text-sm rounded-lg transition flex items-center gap-2">
@@ -1379,7 +1426,7 @@ function renderSettingsView() {
                   ${t('serviceRunning')} (PID ${sm.processPid || '?'})
                 </span>
               ` : `
-                <button onclick="startServiceAction()" disabled="${sm.isStarting || !d.python}" class="px-4 py-2 bg-primary-600 hover:bg-primary-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm rounded-lg transition flex items-center gap-2">
+                <button onclick="startServiceAction()" disabled="${sm.isStarting || !d.python}" class="px-4 py-2 bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm rounded-lg transition flex items-center gap-2">
                   ${sm.isStarting ? `<svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>${t('startingService')}` : `
                   <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"></path></svg>
                   ${t('startService')}
@@ -1393,8 +1440,8 @@ function renderSettingsView() {
             <label class="flex items-start gap-2 cursor-pointer">
               <input type="checkbox" ${sm.autoStart ? 'checked' : ''} onchange="toggleAutoStart(this.checked)" class="mt-0.5 accent-primary-600">
               <div>
-                <div class="text-sm text-zinc-300">${t('autoStartService')}</div>
-                <div class="text-xs text-zinc-500 mt-0.5">${t('autoStartHint')}</div>
+                <div class="text-sm text-stone-600">${t('autoStartService')}</div>
+                <div class="text-xs text-stone-400 mt-0.5">${t('autoStartHint')}</div>
               </div>
             </label>
           </div>
@@ -1402,49 +1449,47 @@ function renderSettingsView() {
 
         <!-- Logs -->
         ${d && d.voiceServicePath ? `
-          <div class="mt-4 pt-4 border-t border-zinc-800">
+          <div class="mt-4 pt-4 border-t border-stone-200">
             <div class="flex items-center justify-between mb-2">
-              <h4 class="text-xs font-semibold text-zinc-400">${t('serviceLogs')}</h4>
-              <button onclick="clearServiceLogs()" class="text-xs text-zinc-500 hover:text-zinc-300">${t('clearLogs')}</button>
+              <h4 class="text-xs font-semibold text-stone-500">${t('serviceLogs')}</h4>
+              <button onclick="clearServiceLogs()" class="text-xs text-stone-400 hover:text-stone-600">${t('clearLogs')}</button>
             </div>
-            <div id="service-logs" class="bg-black/50 rounded-lg p-3 max-h-48 overflow-y-auto font-mono text-xs space-y-0.5">
-              ${sm.logs.length === 0 ? `<div class="text-zinc-600">${t('noLogs')}</div>` : sm.logs.map(l => `<div class="text-zinc-400 whitespace-pre-wrap">${escapeHtml(l)}</div>`).join('')}
+            <div id="service-logs" class="bg-stone-50 rounded-lg p-3 max-h-48 overflow-y-auto font-mono text-xs space-y-0.5">
+              ${sm.logs.length === 0 ? `<div class="text-stone-500">${t('noLogs')}</div>` : sm.logs.map(l => `<div class="text-stone-500 whitespace-pre-wrap">${escapeHtml(l)}</div>`).join('')}
             </div>
           </div>
         ` : ''}
 
-        <!-- Setup guide -->
-        ${!d || !d.voiceServicePath ? renderSetupGuide() : ''}
       </div>
 
       <!-- Service URL -->
-      <div class="bg-zinc-900/60 rounded-xl border border-zinc-800 p-5 mb-4">
+      <div class="bg-white/80 rounded-xl border border-stone-200 p-5 mb-4">
         <h3 class="text-sm font-semibold mb-3">${t('settingsService')}</h3>
         <div class="space-y-3">
           <div>
-            <label class="block text-xs text-zinc-500 mb-1.5">${t('settingsServiceUrl')}</label>
-            <input id="settings-service-url" type="text" value="${state.serviceUrl}" placeholder="${t('settingsServiceUrlPlaceholder')}" class="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-white text-sm focus:border-primary-500 focus:outline-none">
+            <label class="block text-xs text-stone-400 mb-1.5">${t('settingsServiceUrl')}</label>
+            <input id="settings-service-url" type="text" value="${state.serviceUrl}" placeholder="${t('settingsServiceUrlPlaceholder')}" class="w-full px-3 py-2 bg-white border border-stone-200 rounded-lg text-stone-900 text-sm focus:border-primary-600 focus:outline-none">
           </div>
           <div>
-            <label class="block text-xs text-zinc-500 mb-1.5">${t('settingsServiceTimeout')}</label>
-            <input id="settings-timeout" type="number" min="10" max="600" value="${state.serviceTimeout}" class="w-full px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-white text-sm focus:border-primary-500 focus:outline-none">
+            <label class="block text-xs text-stone-400 mb-1.5">${t('settingsServiceTimeout')}</label>
+            <input id="settings-timeout" type="number" min="10" max="600" value="${state.serviceTimeout}" class="w-full px-3 py-2 bg-white border border-stone-200 rounded-lg text-stone-900 text-sm focus:border-primary-600 focus:outline-none">
           </div>
           <div class="flex gap-2 pt-2">
-            <button onclick="saveSettings()" class="px-4 py-2 bg-primary-600 hover:bg-primary-500 text-white text-sm rounded-lg transition">${t('settingsSave')}</button>
-            <button onclick="resetSettings()" class="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm rounded-lg transition">${t('settingsReset')}</button>
+            <button onclick="saveSettings()" class="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white text-sm rounded-lg transition">${t('settingsSave')}</button>
+            <button onclick="resetSettings()" class="px-4 py-2 bg-stone-100 hover:bg-stone-200 text-stone-600 text-sm rounded-lg transition">${t('settingsReset')}</button>
           </div>
         </div>
       </div>
 
       <!-- About -->
-      <div class="bg-zinc-900/60 rounded-xl border border-zinc-800 p-5">
+      <div class="bg-white/80 rounded-xl border border-stone-200 p-5">
         <h3 class="text-sm font-semibold mb-3">${t('settingsAbout')}</h3>
         <div class="space-y-2 text-sm">
-          <div class="flex justify-between"><span class="text-zinc-500">${t('settingsVersion')}</span><span>${version.version}</span></div>
-          <div class="flex justify-between"><span class="text-zinc-500">${t('settingsPlatform')}</span><span>${version.platform}</span></div>
-          <div class="flex justify-between"><span class="text-zinc-500">${t('settingsArchitecture')}</span><span>${version.arch}</span></div>
-          <div class="pt-2 border-t border-zinc-800 mt-2">
-            <a href="${t('openSourceUrl')}" target="_blank" class="text-primary-400 hover:text-primary-300 text-xs">${t('openSourceUrl')}</a>
+          <div class="flex justify-between"><span class="text-stone-400">${t('settingsVersion')}</span><span>${version.version}</span></div>
+          <div class="flex justify-between"><span class="text-stone-400">${t('settingsPlatform')}</span><span>${version.platform}</span></div>
+          <div class="flex justify-between"><span class="text-stone-400">${t('settingsArchitecture')}</span><span>${version.arch}</span></div>
+          <div class="pt-2 border-t border-stone-200 mt-2">
+            <a href="${t('openSourceUrl')}" target="_blank" class="text-primary-600 hover:text-primary-700 text-xs">${t('openSourceUrl')}</a>
           </div>
         </div>
       </div>
@@ -1460,15 +1505,15 @@ function renderServiceDetectionResult(d) {
         ${d.python ? `
           <svg class="w-4 h-4 text-green-500 mt-0.5 shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>
           <div class="flex-1 min-w-0">
-            <div class="text-zinc-300">${t('pythonFound')}</div>
-            ${d.pythonVersion ? `<div class="text-xs text-zinc-500 mt-0.5">${t('pythonVersionLabel')}: ${escapeHtml(d.pythonVersion)}</div>` : ''}
-            <div class="text-xs text-zinc-500 mt-0.5 truncate">${t('pythonPathLabel')}: ${escapeHtml(d.venvPython || d.python)}</div>
+            <div class="text-stone-600">${t('pythonFound')}</div>
+            ${d.pythonVersion ? `<div class="text-xs text-stone-400 mt-0.5">${t('pythonVersionLabel')}: ${escapeHtml(d.pythonVersion)}</div>` : ''}
+            <div class="text-xs text-stone-400 mt-0.5 truncate">${t('pythonPathLabel')}: ${escapeHtml(d.venvPython || d.python)}</div>
           </div>
         ` : `
           <svg class="w-4 h-4 text-amber-500 mt-0.5 shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
           <div class="flex-1 min-w-0">
             <div class="text-amber-300">${t('pythonNotFound')}</div>
-            <a href="${t('pythonInstallUrl')}" target="_blank" class="text-xs text-primary-400 hover:text-primary-300 mt-0.5 inline-block">${t('pythonInstallUrl')}</a>
+            <a href="${t('pythonInstallUrl')}" target="_blank" class="text-xs text-primary-600 hover:text-primary-700 mt-0.5 inline-block">${t('pythonInstallUrl')}</a>
           </div>
         `}
       </div>
@@ -1478,15 +1523,15 @@ function renderServiceDetectionResult(d) {
         ${d.voiceServicePath ? `
           <svg class="w-4 h-4 text-green-500 mt-0.5 shrink-0" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>
           <div class="flex-1 min-w-0">
-            <div class="text-zinc-300">${t('voiceServiceFound')}</div>
-            <div class="text-xs text-zinc-500 mt-0.5 flex items-center gap-2">
+            <div class="text-stone-600">${t('voiceServiceFound')}</div>
+            <div class="text-xs text-stone-400 mt-0.5 flex items-center gap-2">
               <span class="truncate">${t('voiceServicePathLabel')}: ${escapeHtml(d.voiceServicePath)}</span>
-              <button onclick="browseVoiceServiceDir()" class="text-primary-400 hover:text-primary-300 shrink-0">${t('voiceServiceSelectDir')}</button>
+              <button onclick="browseVoiceServiceDir()" class="text-primary-600 hover:text-primary-700 shrink-0">${t('voiceServiceSelectDir')}</button>
             </div>
             <div class="flex flex-wrap gap-2 mt-2 text-xs">
-              <span class="px-2 py-0.5 rounded ${d.hasVenv ? 'bg-green-500/10 text-green-400' : 'bg-amber-500/10 text-amber-400'}">venv: ${d.hasVenv ? '✓' : '✗'}</span>
-              <span class="px-2 py-0.5 rounded ${d.hasMainPy ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}">main.py: ${d.hasMainPy ? '✓' : '✗'}</span>
-              <span class="px-2 py-0.5 rounded ${d.hasModels ? 'bg-green-500/10 text-green-400' : 'bg-amber-500/10 text-amber-400'}">${d.hasModels ? t('modelsReady') : t('modelsNotReady')}</span>
+              <span class="px-2 py-0.5 rounded ${d.hasVenv ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'}">venv: ${d.hasVenv ? '✓' : '✗'}</span>
+              <span class="px-2 py-0.5 rounded ${d.hasMainPy ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}">main.py: ${d.hasMainPy ? '✓' : '✗'}</span>
+              <span class="px-2 py-0.5 rounded ${d.hasModels ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'}">${d.hasModels ? t('modelsReady') : t('modelsNotReady')}</span>
             </div>
           </div>
         ` : `
@@ -1494,29 +1539,12 @@ function renderServiceDetectionResult(d) {
           <div class="flex-1 min-w-0">
             <div class="text-amber-300">${t('voiceServiceNotFound')}</div>
             <div class="flex items-center gap-2 mt-1">
-              <button onclick="browseVoiceServiceDir()" class="text-xs px-2 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded">${t('voiceServiceSelectDir')}</button>
-              <a href="${t('voiceServiceRepoUrl')}" target="_blank" class="text-xs text-primary-400 hover:text-primary-300">${t('voiceServiceDownload')}</a>
+              <button onclick="browseVoiceServiceDir()" class="text-xs px-2 py-1 bg-stone-100 hover:bg-stone-200 text-stone-600 rounded">${t('voiceServiceSelectDir')}</button>
+              <a href="${t('voiceServiceRepoUrl')}" target="_blank" class="text-xs text-primary-600 hover:text-primary-700">${t('voiceServiceDownload')}</a>
             </div>
           </div>
         `}
       </div>
-    </div>
-  `
-}
-
-function renderSetupGuide() {
-  return `
-    <div class="mt-4 pt-4 border-t border-zinc-800">
-      <h4 class="text-xs font-semibold text-zinc-400 mb-2">${t('setupGuide')}</h4>
-      <ol class="text-xs text-zinc-500 space-y-1 list-decimal list-inside">
-        <li>${t('setupStep1')}</li>
-        <li>${t('setupStep2')}</li>
-        <li>${t('setupStep3')}</li>
-        <li>${t('setupStep4')}</li>
-        <li>${t('setupStep5')}</li>
-        <li>${t('setupStep6')}</li>
-      </ol>
-      <div class="text-xs text-zinc-600 mt-2">${t('modelsPathHint')}</div>
     </div>
   `
 }
@@ -1533,11 +1561,11 @@ function renderModelManager() {
 
   let statusBadge
   if (ready) {
-    statusBadge = `<span class="px-2 py-0.5 rounded bg-green-500/10 text-green-400 text-xs">${t('modelReady')}</span>`
+    statusBadge = `<span class="px-2 py-0.5 rounded bg-green-50 text-green-700 text-xs">${t('modelReady')}</span>`
   } else if (partial) {
-    statusBadge = `<span class="px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 text-xs">${t('modelPartial')} (${status.existing}/${status.total})</span>`
+    statusBadge = `<span class="px-2 py-0.5 rounded bg-amber-50 text-amber-700 text-xs">${t('modelPartial')} (${status.existing}/${status.total})</span>`
   } else {
-    statusBadge = `<span class="px-2 py-0.5 rounded bg-red-500/10 text-red-400 text-xs">${t('modelNotReady')}</span>`
+    statusBadge = `<span class="px-2 py-0.5 rounded bg-red-50 text-red-700 text-xs">${t('modelNotReady')}</span>`
   }
 
   const totalSize = dl.totalBytes || 0
@@ -1545,11 +1573,11 @@ function renderModelManager() {
   const percent = dl.percent || 0
 
   return `
-    <div class="bg-zinc-900/60 rounded-xl border border-zinc-800 p-5 mb-4">
+    <div class="bg-white/80 rounded-xl border border-stone-200 p-5 mb-4">
       <div class="flex items-start justify-between mb-3">
         <div>
           <h3 class="text-sm font-semibold">${t('modelManager')}</h3>
-          <p class="text-xs text-zinc-500 mt-1">${t('modelManagerDesc')}</p>
+          <p class="text-xs text-stone-400 mt-1">${t('modelManagerDesc')}</p>
         </div>
         ${statusBadge}
       </div>
@@ -1558,16 +1586,16 @@ function renderModelManager() {
       ${dl.isDownloading ? `
         <div class="mt-3 space-y-2">
           <div class="flex items-center justify-between text-xs">
-            <span class="text-zinc-400">
-              ${t('modelCurrentFile')}: <span class="text-zinc-300 font-mono">${escapeHtml(dl.currentFile)}</span>
-              <span class="text-zinc-500 ml-2">(${dl.currentIndex + 1}/${dl.totalFiles})</span>
+            <span class="text-stone-500">
+              ${t('modelCurrentFile')}: <span class="text-stone-600 font-mono">${escapeHtml(dl.currentFile)}</span>
+              <span class="text-stone-400 ml-2">(${dl.currentIndex + 1}/${dl.totalFiles})</span>
             </span>
-            <span class="text-zinc-400">${percent}%</span>
+            <span class="text-stone-500">${percent}%</span>
           </div>
-          <div class="relative h-2 bg-zinc-800 rounded-full overflow-hidden">
+          <div class="relative h-2 bg-stone-100 rounded-full overflow-hidden">
             <div class="absolute inset-y-0 left-0 bg-primary-600 transition-all" style="width: ${percent}%"></div>
           </div>
-          <div class="flex items-center justify-between text-xs text-zinc-500">
+          <div class="flex items-center justify-between text-xs text-stone-400">
             <span>${formatBytes(downloadedSize)} / ${formatBytes(totalSize)}</span>
             <span>${formatBytes(dl.speed)}/s</span>
           </div>
@@ -1579,9 +1607,9 @@ function renderModelManager() {
         <!-- 非下载状态：显示状态信息和操作按钮 -->
         <div class="mt-3 space-y-3">
           ${status ? `
-            <div class="text-xs text-zinc-500 flex items-center gap-4">
-              <span>${t('modelFiles')}: <span class="text-zinc-300">${status.existing}/${status.total}</span></span>
-              <span>${t('modelSize')}: <span class="text-zinc-300">~3.6 GB</span></span>
+            <div class="text-xs text-stone-400 flex items-center gap-4">
+              <span>${t('modelFiles')}: <span class="text-stone-600">${status.existing}/${status.total}</span></span>
+              <span>${t('modelSize')}: <span class="text-stone-600">~3.6 GB</span></span>
             </div>
           ` : ''}
           ${dl.error ? `
@@ -1589,16 +1617,16 @@ function renderModelManager() {
           ` : ''}
           <div class="flex items-center gap-2">
             ${ready ? `
-              <button onclick="downloadModelAction()" class="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-md transition">
+              <button onclick="downloadModelAction()" class="px-3 py-1.5 text-xs bg-stone-100 hover:bg-stone-200 text-stone-600 rounded-md transition">
                 ${t('modelRedownload')}
               </button>
             ` : `
-              <button onclick="downloadModelAction()" class="px-3 py-1.5 text-xs bg-primary-600 hover:bg-primary-500 text-white rounded-md transition flex items-center gap-1.5">
+              <button onclick="downloadModelAction()" class="px-3 py-1.5 text-xs bg-primary-600 hover:bg-primary-700 text-white rounded-md transition flex items-center gap-1.5">
                 <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z"></path></svg>
                 ${t('modelDownload')}
               </button>
             `}
-            <button onclick="openModelDir()" class="px-3 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-md transition">
+            <button onclick="openModelDir()" class="px-3 py-1.5 text-xs bg-stone-100 hover:bg-stone-200 text-stone-600 rounded-md transition">
               ${t('modelOpenDir')}
             </button>
           </div>
@@ -2164,7 +2192,7 @@ async function init() {
       const logsEl = document.getElementById('service-logs')
       if (logsEl) {
         const div = document.createElement('div')
-        div.className = 'text-zinc-400 whitespace-pre-wrap'
+        div.className = 'text-stone-500 whitespace-pre-wrap'
         div.textContent = line
         logsEl.appendChild(div)
         // 限制 DOM 节点数量
@@ -2202,9 +2230,9 @@ async function init() {
     // 订阅下载进度
     window.podcastai.model.onDownloadProgress((progress) => {
       state.model.downloadState = progress
-      // 只在设置页可见时更新 UI（避免频繁全量 render）
+      // 只在设置页或克隆页可见时更新 UI（避免频繁全量 render）
       const modelSection = document.getElementById('model-download-section')
-      if (modelSection || state.activeView === 'settings') {
+      if (modelSection || state.activeView === 'settings' || state.activeView === 'clone') {
         render()
       }
     })

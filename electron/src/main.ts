@@ -664,6 +664,22 @@ if (!gotTheLock) {
       } else {
         pushLog(`✗ Auto-start failed: ${result.error}`)
       }
+
+      // 自动下载模型（如果未下载且当前没有在下载）
+      const modelStatus = checkModelExists()
+      if (!modelStatus.ready && !modelDownloadState.isDownloading) {
+        pushLog('Auto-downloading CosyVoice2 model...')
+        // 异步下载，不阻塞应用启动
+        downloadModel().then((result) => {
+          if (result.success) {
+            pushLog('✓ Model auto-download complete')
+          } else {
+            pushLog(`✗ Model auto-download failed: ${result.error}`)
+          }
+        }).catch((err) => {
+          pushLog(`✗ Model auto-download error: ${err}`)
+        })
+      }
     } else {
       pushLog('⚠ Voice runtime not found, service not started')
     }

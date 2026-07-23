@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh" class="dark">
+<html lang="zh">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -12,22 +12,46 @@
       theme: {
         extend: {
           colors: {
-            primary: { 50: '#f5f3ff', 500: '#8b5cf6', 600: '#7c3aed', 700: '#6d28d9' },
+            primary: {
+              50: '#f0fdfa',
+              100: '#ccfbf1',
+              200: '#99f6e4',
+              300: '#5eead4',
+              400: '#2dd4bf',
+              500: '#14b8a6',
+              600: '#0d9488',
+              700: '#0f766e',
+              800: '#115e59',
+              900: '#134e4a',
+            },
           },
           fontFamily: {
-            sans: ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'sans-serif'],
+            sans: ['ui-sans-serif', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'sans-serif'],
+            serif: ['Noto Serif SC', 'Songti SC', 'STSong', 'SimSun', 'Georgia', 'serif'],
+          },
+          borderRadius: {
+            'xl': '0.8rem',
+            '2xl': '1.2rem',
+            '3xl': '1.6rem',
           },
         },
       },
     }
   </script>
   <style>
-    * { -webkit-font-smoothing: antialiased; }
-    body { background: #0a0a0a; color: #fafafa; overflow: hidden; }
-    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    @import url('https://fonts.googleapis.cn/css2?family=Noto+Serif+SC:wght@400;500;600;700&display=swap');
+
+    * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+    body {
+      background: #fafaf9;
+      color: #1c1917;
+      font-family: 'Noto Serif SC', 'Songti SC', 'STSong', 'SimSun', Georgia, serif;
+      overflow: hidden;
+    }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 4px; }
-    ::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+    ::-webkit-scrollbar-thumb { background: #d6d3d1; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #a8a29e; }
     .app-drag { -webkit-app-region: drag; }
     .app-no-drag { -webkit-app-region: no-drag; }
     .toast-enter { animation: toastIn 0.3s ease-out; }
@@ -36,6 +60,19 @@
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
     .wave { display: inline-block; width: 3px; height: 14px; margin: 0 1px; background: currentColor; border-radius: 2px; animation: wave 1.2s ease-in-out infinite; }
     @keyframes wave { 0%, 100% { height: 6px; } 50% { height: 16px; } }
+    .gradient-text {
+      background: linear-gradient(to right, #0d9488, #7c3aed);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .glow {
+      position: absolute;
+      border-radius: 9999px;
+      filter: blur(80px);
+      opacity: 0.3;
+      pointer-events: none;
+    }
   </style>
 </head>
 <body>
