@@ -1,6 +1,6 @@
 {
   "name": "podcastai-desktop",
-  "version": "1.0.4",
+  "version": "1.0.32",
   "description": "PodcastAI Desktop Client",
   "main": "dist/main.js",
   "scripts": {
@@ -50,7 +50,15 @@
       "gatekeeperAssess": false,
       "hardenedRuntime": false,
       "notarize": false,
-      "forceCodeSigning": false
+      "forceCodeSigning": false,
+      "extendInfo": {
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLName": "com.podcastai.desktop",
+            "CFBundleURLSchemes": ["podcastai"]
+          }
+        ]
+      }
     },
     "win": {
       "target": [

@@ -51,6 +51,7 @@ const I18N = {
     scriptGenerating: '正在生成脚本...',
     audioSynthesizing: '正在合成音频...',
     segmentProgress: '正在合成第 {current}/{total} 段',
+    audioFinalizing: '正在合成最终音频，请稍候...',
     scriptPreview: '脚本预览',
     scriptEditHint: '生成后可编辑脚本，再合成音频',
     audioPlayer: '音频播放器',
@@ -124,6 +125,7 @@ const I18N = {
     play: '播放',
     pause: '暂停',
     download: '下载',
+    downloadSuccess: '下载成功',
     delete: '删除',
     close: '关闭',
     cancel: '取消',
@@ -217,7 +219,7 @@ const I18N = {
     portConflict: '端口 8907 可能被占用，请检查是否有其他进程占用',
     // ─── 模型下载（v1.0.4） ───
     modelManager: '语音模型',
-    modelManagerDesc: 'CosyVoice2 声音克隆模型（约 3.6GB，首次使用需下载）',
+    modelManagerDesc: 'CosyVoice2 声音克隆模型（约 3.7GB，已内置，开箱即用）',
     modelStatus: '模型状态',
     modelReady: '模型已就绪',
     modelNotReady: '模型未下载',
@@ -281,6 +283,7 @@ const I18N = {
     scriptGenerating: 'Generating script...',
     audioSynthesizing: 'Synthesizing audio...',
     segmentProgress: 'Synthesizing segment {current}/{total}',
+    audioFinalizing: 'Finalizing audio, please wait...',
     scriptPreview: 'Script Preview',
     scriptEditHint: 'Edit the script after generation, then synthesize audio',
     audioPlayer: 'Audio Player',
@@ -354,6 +357,7 @@ const I18N = {
     play: 'Play',
     pause: 'Pause',
     download: 'Download',
+    downloadSuccess: 'Downloaded successfully',
     delete: 'Delete',
     close: 'Close',
     cancel: 'Cancel',
@@ -447,7 +451,7 @@ const I18N = {
     portConflict: 'Port 8907 may be in use. Check if another process is using it.',
     // ─── Model Download (v1.0.4) ───
     modelManager: 'Voice Model',
-    modelManagerDesc: 'CosyVoice2 voice cloning model (~3.6GB, downloads on first use)',
+    modelManagerDesc: 'CosyVoice2 voice cloning model (~3.7GB, pre-bundled, ready out of the box)',
     modelStatus: 'Model Status',
     modelReady: 'Model ready',
     modelNotReady: 'Model not downloaded',
@@ -508,9 +512,12 @@ const state = {
   isGenerating: false,
   isCloning: false,
   progress: { current: 0, total: 0, stage: '' },
+  synthFinalizing: false,
+  audioBuffer: null, // v1.0.17: 保存音频 ArrayBuffer 用于 IPC 下载
   scriptText: '',
   audioUrl: null,
   audioBlob: null,
+  synthError: null, // v1.0.26: 合成错误信息（持久显示）
   // 表单
   urlInput: '',
   textInput: '',
@@ -524,6 +531,11 @@ const state = {
   // 预览
   previewAudio: null,
   previewPlayingId: null,
+  previewLoadingId: null,
+  // v1.0.9: 播客页面声音试听
+  podcastVoiceAudio: null,
+  podcastVoicePlaying: null,  // 'voice1' | 'voice2' | null
+  podcastVoiceLoading: null,  // 'voice1' | 'voice2' | null
   // 服务管理器
   serviceManager: {
     detecting: false,
@@ -552,7 +564,15 @@ const state = {
     },
   },
   // 客户端版本信息（init 时异步加载）
-  appVersion: { version: '1.0.4', platform: 'unknown', arch: 'unknown' },
+  appVersion: { version: '1.0.5', platform: 'unknown', arch: 'unknown' },
+  // v1.0.31: 认证状态
+  auth: {
+    isAuthenticated: false,
+    token: null,
+    email: null,
+    name: null,
+    userId: null,
+  },
 }
 
 // ════════════════════════════════════════════════════════════
@@ -611,11 +631,13 @@ function toast(message, type = 'info') {
   el.className = `toast-enter pointer-events-auto px-4 py-3 rounded-lg shadow-lg text-white text-sm max-w-sm ${colors[type] || colors.info}`
   el.textContent = message
   container.appendChild(el)
+  // v1.0.26: 错误类型 toast 持续 10 秒，其他类型 3.5 秒
+  const duration = type === 'error' ? 10000 : 3500
   setTimeout(() => {
     el.style.opacity = '0'
     el.style.transition = 'opacity 0.3s'
     setTimeout(() => el.remove(), 300)
-  }, 3500)
+  }, duration)
 }
 
 // ════════════════════════════════════════════════════════════
@@ -671,12 +693,38 @@ async function synthesizePodcast(script, cloneIds, podcastType, voice1, voice2, 
   formData.append('voice1', voice1 || '')
   formData.append('voice2', voice2 || '')
 
-  const res = await fetch(`${state.serviceUrl}/synthesize-podcast`, {
-    method: 'POST',
-    body: formData,
-  })
+  // v1.0.28: 空闲超时机制（从 3 分钟增加到 10 分钟）
+  // 后端每 10 秒发送心跳，正常情况下不会触发超时
+  // 但 HTTP 缓冲可能导致心跳延迟，10 分钟更安全
+  // 配合 main.ts 自动重启 + renderer.js 重试机制，即使超时也能恢复
+  const controller = new AbortController()
+  let _idleTimeoutId = setTimeout(() => controller.abort(), 10 * 60 * 1000)
+  const _resetIdleTimer = () => {
+    clearTimeout(_idleTimeoutId)
+    _idleTimeoutId = setTimeout(() => controller.abort(), 10 * 60 * 1000)
+  }
+
+  // v1.0.30: 用 try-finally 确保函数退出时 abort controller
+  // 防止重试时旧请求的 TCP 连接残留，导致后端 Broken pipe
+  try {
+  let res
+  try {
+    res = await fetch(`${state.serviceUrl}/synthesize-podcast`, {
+      method: 'POST',
+      body: formData,
+      signal: controller.signal,
+    })
+  } catch (fetchErr) {
+    clearTimeout(_idleTimeoutId)
+    if (fetchErr.name === 'AbortError') {
+      throw new Error('语音服务连接超时（10 分钟内无响应，可能服务已崩溃，正在尝试自动恢复）')
+    }
+    // v1.0.28: BodyStreamBuffer was aborted 等网络错误也触发重试
+    throw fetchErr
+  }
 
   if (!res.ok) {
+    clearTimeout(_idleTimeoutId)
     const errText = await res.text()
     throw new Error(errText || `HTTP ${res.status}`)
   }
@@ -685,117 +733,424 @@ async function synthesizePodcast(script, cloneIds, podcastType, voice1, voice2, 
   const contentType = res.headers.get('content-type') || ''
 
   if (contentType.includes('text/event-stream') || contentType.includes('application/x-ndjson')) {
-    // 流式响应：解析进度事件 + 最终音频
+    // v1.0.11: 后端使用 application/x-ndjson（每行一个 JSON），按行分隔
+    // 兼容 SSE（\n\n）和 ndjson（\n）两种格式
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
     const audioChunks = []
 
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        // v1.0.27: 每次收到数据就重置空闲计时器，证明服务还活着
+        _resetIdleTimer()
+        buffer += decoder.decode(value, { stream: true })
 
-      // 处理 SSE 事件（以 \n\n 分隔）
-      const events = buffer.split('\n\n')
-      buffer = events.pop() || ''
+        // v1.0.11: 兼容 \n\n (SSE) 和 \n (ndjson) 分隔
+        // 后端 _send_event 输出格式：JSON + "\n"
+        const events = buffer.split('\n')
+        buffer = events.pop() || '' // 保留最后一段未完成的内容
 
-      for (const evt of events) {
-        if (!evt.trim()) continue
-        // 解析 data: JSON 行
-        const lines = evt.split('\n').filter(l => l.startsWith('data:'))
-        if (lines.length === 0) continue
-        try {
-          const data = JSON.parse(lines[0].slice(5).trim())
-          if (data.type === 'segment_start' && onProgress) {
-            onProgress({ stage: 'synth', current: data.segment_index + 1, total: data.total_segments })
-          } else if (data.type === 'audio' && data.url) {
-            // 下载音频分段
-            const audioRes = await fetch(`${state.serviceUrl}${data.url}`)
-            if (audioRes.ok) {
-              const chunk = await audioRes.arrayBuffer()
-              audioChunks.push(chunk)
+        for (const evt of events) {
+          const line = evt.trim()
+          if (!line) continue
+          // 兼容 SSE "data: ..." 前缀和裸 JSON
+          const jsonStr = line.startsWith('data:') ? line.slice(5).trim() : line
+          if (!jsonStr) continue
+          try {
+            const data = JSON.parse(jsonStr)
+            if (data.type === 'segment_start' && onProgress) {
+              onProgress({ stage: 'synth', current: data.segment_index + 1, total: data.total_segments })
+            } else if (data.type === 'segment_done' && onProgress) {
+              // v1.0.11: 段完成也更新进度（更细粒度反馈）
+              onProgress({ stage: 'synth', current: data.segment_index + 1, total: data.total_segments })
+            } else if (data.type === 'finalizing') {
+              // v1.0.15: 后端进入最终合并阶段，前端切换到 finalizing UI
+              // 避免段合成 100% 后无反馈的卡死假象
+              if (onProgress) onProgress({ stage: 'finalizing', current: 0, total: 0 })
+            } else if (data.type === 'audio' && data.url) {
+              // 下载音频分段
+              const audioRes = await fetch(`${state.serviceUrl}${data.url}`)
+              if (audioRes.ok) {
+                const chunk = await audioRes.arrayBuffer()
+                audioChunks.push(chunk)
+              }
+            } else if (data.type === 'complete' && data.audio_url) {
+              // 兼容旧版 complete 事件
+              clearTimeout(_idleTimeoutId)
+              // v1.0.20: 回退到 ArrayBuffer 下载方案
+              // v1.0.18 的 HTTP URL 方案在 Electron <audio> 中时长为 0（StaticFiles CORS/MIME 问题）
+              const dlUrl = `${state.serviceUrl}${data.audio_url}`
+              console.log('[Podcast] Downloading audio from:', dlUrl)
+              const audioRes = await fetch(dlUrl)
+              if (audioRes.ok) {
+                const buf = await audioRes.arrayBuffer()
+                console.log('[Podcast] Audio downloaded:', buf.byteLength, 'bytes')
+                if (buf.byteLength > 0) return buf
+                throw new Error('Downloaded audio is empty (0 bytes)')
+              }
+              throw new Error(`Failed to download audio (HTTP ${audioRes.status})`)
+            } else if (data.type === 'done' && data.audio_url) {
+              // v1.0.11: 后端实际发送的是 done 事件（之前前端只认 complete，导致拿不到音频）
+              clearTimeout(_idleTimeoutId)
+              // v1.0.20: 回退到 ArrayBuffer 下载方案
+              // v1.0.18 的 HTTP URL 方案在 Electron <audio> 中时长为 0
+              // blob URL 在 CSP 允许 blob: media-src 的情况下可以正常播放
+              const dlUrl = `${state.serviceUrl}${data.audio_url}`
+              console.log('[Podcast] Downloading audio from:', dlUrl)
+              const audioRes = await fetch(dlUrl)
+              if (audioRes.ok) {
+                const buf = await audioRes.arrayBuffer()
+                console.log('[Podcast] Audio downloaded:', buf.byteLength, 'bytes')
+                if (buf.byteLength > 0) return buf
+                throw new Error('Downloaded audio is empty (0 bytes)')
+              }
+              throw new Error(`Failed to download audio (HTTP ${audioRes.status})`)
+            } else if (data.type === 'error') {
+              clearTimeout(_idleTimeoutId)
+              throw new Error(data.message || data.error || 'Synthesis failed')
             }
-          } else if (data.type === 'complete' && data.audio_url) {
-            // 完整音频
-            const audioRes = await fetch(`${state.serviceUrl}${data.audio_url}`)
-            if (audioRes.ok) {
-              return await audioRes.arrayBuffer()
+            // 忽略 start / heartbeat / segment_failed 等事件
+          } catch (e) {
+            // v1.0.17: 区分 JSON 解析错误和业务错误
+            // - JSON 解析失败：warn 并继续（不影响后续事件）
+            // - 业务错误（下载失败、超时、error 事件）：重新抛出，让外层 catch 处理
+            if (e instanceof SyntaxError) {
+              console.warn('Failed to parse event JSON:', line, e)
+            } else {
+              // 业务错误，重新抛出
+              throw e
             }
-          } else if (data.type === 'error') {
-            throw new Error(data.message || data.error || 'Synthesis failed')
           }
-        } catch (e) {
-          console.warn('Failed to parse SSE event:', e)
         }
       }
+    } finally {
+      clearTimeout(_idleTimeoutId)
     }
 
-    // 如果是分块音频，合并
+    // v1.0.26: 流结束但没拿到 done 事件
+    // 之前返回 null 会导致上层抛"返回空结果"，但真实原因可能是后端异常未发 done 事件
     if (audioChunks.length > 0) {
-      return audioChunks[0] // 简化：返回第一个分块（实际应合并 wav）
+      // v1.0.20: 返回分块的 ArrayBuffer（降级方案）
+      console.warn('[Podcast] Stream ended without done event, using collected chunks:', audioChunks.length)
+      return audioChunks[0]
     }
-    return null
+    // v1.0.26: 抛出明确错误，避免上层收到 null 后给出"返回空结果"这种误导性提示
+    // v1.0.30: 错误信息包含 "aborted" 关键词，使上层重试机制可以识别并重试
+    throw new Error('音频流结束但未收到完成事件（后端可能异常退出或连接中断，请查看服务日志）[aborted]')
   } else if (contentType.includes('audio/')) {
-    // 直接返回音频
+    clearTimeout(_idleTimeoutId)
+    // v1.0.20: 直接返回音频 ArrayBuffer
     return await res.arrayBuffer()
   } else {
+    clearTimeout(_idleTimeoutId)
     // JSON 响应（可能是错误或降级）
     const data = await res.json().catch(() => ({}))
     if (data.error) throw new Error(data.error)
     if (data.audioUrl) {
+      // v1.0.20: 下载音频到 ArrayBuffer
       const audioRes = await fetch(`${state.serviceUrl}${data.audioUrl}`)
-      return await audioRes.arrayBuffer()
+      if (audioRes.ok) return await audioRes.arrayBuffer()
     }
     throw new Error('Unexpected response format')
   }
+  } finally {
+    // v1.0.30: 确保函数退出时关闭连接
+    // 防止重试时旧请求的 TCP 连接残留，导致后端 Broken pipe
+    clearTimeout(_idleTimeoutId)
+    try { controller.abort() } catch(e) {}
+  }
+}
+
+// v1.0.23: 内置播客脚本生成算法（不依赖在线 API）
+// 参考 route.ts 的降级算法，增加元信息过滤和口语化重组
+function generatePodcastScriptLocal(content, podcastType) {
+  // 1) 噪声行过滤
+  const NOISE_LINE_PATTERNS = [
+    /^你说的完全正确/, /^作者[：:]/, /^来源[：:]/, /^出处[：:]/, /^转自[：:]/,
+    /^本文作者/, /^公众号/, /^微信公号/, /^商务合作/, /^投稿邮箱/, /^联系方式/,
+    /^扫码/, /^长按/, /二维码/, /关注公众号/, /回复.*获取/, /点击.*链接/,
+    /阅读原文/, /查看更多/, /下载.*APP/, /进入.*小程序/,
+    /点赞转发/, /记得关注/, /星标/, /轻点两下/, /取消赞|取消在看/,
+    /^赞$/, /^在看$/, /^分享$/, /^留言$/, /^收藏$/, /^听过$/, /^原创$/, /^赞赏$/,
+    /长按.*二维码/, /扫描.*关注/, /点击.*关注/, /欢迎.*关注/, /更多精彩/,
+    /版权归原作者/, /本文.*首发/, /此文.*转载/, /每天都在更新/,
+    /觉得文章还不错/, /附在文后|文末有|附在文末/, /^@[作作]者/,
+    /^--end--$/, /↑阅读之前记得关注/, /如果觉得文章还不错/,
+    /在小说阅读器/, /^去阅读$/, /沉浸阅读/, /读本章/,
+    /视频加载失败/, /请刷新页面/, /^刷新\s*$/,
+  ]
+
+  // 2) 段落内噪声片段替换
+  const NOISE_FRAGMENT_PATTERNS = [
+    [/你说的完全正确/g, ''], [/作者[：:][^\n]*/g, ''], [/来源[：:][^\n]*/g, ''],
+    [/出处[：:][^\n]*/g, ''], [/公众号[：:]?[^\n]*/g, ''], [/关注公众号[^\n]*/g, ''],
+    [/扫码关注[^\n]*/g, ''], [/长按.*二维码[^\n]*/g, ''],
+    [/[+＋]星标/g, ''], [/视频加载失败，?请刷新页面再试/g, ''],
+    [/@[作作]者：?[^\n]*/g, ''], [/轻点两下取消(赞|在看)/g, ''],
+  ]
+
+  // 3) 按段落处理
+  const paragraphs = content
+    .split('\n')
+    .map(p => p.trim())
+    .filter(p => {
+      if (p.length < 5) return false
+      for (const pattern of NOISE_LINE_PATTERNS) {
+        if (pattern.test(p)) return false
+      }
+      if (/^[\s\-=*_~`#>|+]+$/.test(p)) return false
+      return true
+    })
+    .map(p => {
+      let cleaned = p
+      for (const [pattern, replacement] of NOISE_FRAGMENT_PATTERNS) {
+        cleaned = cleaned.replace(pattern, replacement)
+      }
+      cleaned = cleaned.replace(/^#{1,6}\s*/, '')
+      cleaned = cleaned.replace(/\s+/g, ' ').replace(/[，,]\s*[，,]/g, '，').replace(/\.\.\.\s*。/g, '。').trim()
+      return cleaned
+    })
+    .filter(p => p.length >= 10)
+
+  // 4) 提取句子
+  const allSentences = []
+  for (const p of paragraphs) {
+    const sentences = p.split(/[。！？；]|[.!?](?=\s|$)/).map(s => s.trim()).filter(s => s.length >= 8)
+    allSentences.push(...sentences)
+  }
+
+  // 5) 去重
+  const seen = new Set()
+  const cleanSentences = []
+  for (const s of allSentences) {
+    const key = s.slice(0, 20)
+    if (!seen.has(key)) { seen.add(key); cleanSentences.push(s) }
+  }
+
+  // 6) 提取核心信息点（压缩到 55 字以内）
+  const keyPoints = cleanSentences
+    .map(s => {
+      if (s.length <= 55) return s
+      const cutPos = s.lastIndexOf('，', 50)
+      if (cutPos > 20) return s.slice(0, cutPos)
+      return s.slice(0, 50)
+    })
+    .filter(s => s.length >= 10)
+
+  const maxScriptChars = podcastType === 'dual' ? 12000 : 8000
+
+  if (podcastType === 'dual') {
+    // === 双人对话播客 ===
+    const lines = []
+    const firstPoint = keyPoints[0] || '一个值得关注的话题'
+    const secondPoint = keyPoints[1] || '确实挺有意思的'
+
+    // v1.0.23: 更自然的开场（参考商业访谈风格）
+    lines.push('[主持人]')
+    lines.push(`最近有个事儿挺值得聊聊的，${firstPoint}。`)
+    lines.push('')
+    lines.push('[嘉宾]')
+    lines.push(`嗯，这个我也在关注。${secondPoint}。`)
+    lines.push('')
+
+    const hostLeadIns = [
+      '那我能不能这样理解，', '你这个点其实是在说，', '我换一个角度问，',
+      '等一下，你刚才说的那个点，', '说到这个，', '有个细节我想追问，',
+      '这一点很关键，', '但我想提一个不同的看法，', '让我想到一个问题，',
+    ]
+    const guestLeadIns = [
+      '对，', '没错，', '其实吧，', '我补充一下，',
+      '而且还有一个点，', '有意思的是，', '具体来说，',
+      '我换个说法，', '说得再直接一点，',
+    ]
+
+    let idx = 2
+    let totalChars = firstPoint.length + secondPoint.length + 40
+    let turn = 0
+
+    while (idx < keyPoints.length && totalChars < maxScriptChars) {
+      const content = keyPoints[idx]
+      if (!content) { idx++; turn++; continue }
+
+      if (turn % 2 === 0) {
+        const leadIn = hostLeadIns[turn % hostLeadIns.length]
+        lines.push('[主持人]')
+        lines.push(`${leadIn}${content}。`)
+        totalChars += content.length + leadIn.length + 2
+      } else {
+        const leadIn = guestLeadIns[turn % guestLeadIns.length]
+        lines.push('[嘉宾]')
+        lines.push(`${leadIn}${content}。`)
+        totalChars += content.length + leadIn.length + 2
+      }
+      lines.push('')
+      idx++; turn++
+    }
+
+    // v1.0.23: 更有洞察的收尾
+    const lastTurnWasHost = (turn - 1) % 2 === 0
+    if (lastTurnWasHost) {
+      lines.push('[嘉宾]')
+      lines.push('嗯，确实，这个话题还有很多值得深入聊的地方。')
+      lines.push('')
+    }
+    lines.push('[主持人]')
+    lines.push('聊了这么多，你觉得这个事儿最值得关注的是什么？')
+    lines.push('')
+    lines.push('[嘉宾]')
+    lines.push('我觉得核心还是看后续怎么发展。今天就聊到这儿吧。')
+    lines.push('')
+    lines.push('[主持人]')
+    lines.push('好，感谢收听，我们下期再见。')
+    lines.push('')
+
+    return lines.join('\n')
+  }
+
+  // === 单人播客 ===
+  const lines = []
+  const firstPoint = keyPoints[0] || '一个值得关注的话题'
+
+  // v1.0.23: 更有吸引力的开场
+  lines.push(`最近有个事儿挺值得聊聊的，${firstPoint}。`)
+  lines.push('')
+
+  const transitions = [
+    '说到这个，', '你知道吗，', '有意思的是，', '这里有个细节，',
+    '我个人觉得，', '另外提一句，', '其实啊，', '回到刚才说的，',
+    '换句话说，', '这让我想到，',
+  ]
+
+  let idx = 1
+  let totalChars = firstPoint.length + 40
+  let transIdx = 0
+
+  while (idx < keyPoints.length && totalChars < maxScriptChars) {
+    const point = keyPoints[idx]
+    if (!point) { idx++; continue }
+    const trans = transitions[transIdx % transitions.length]
+    transIdx++
+    lines.push(`${trans}${point}。`)
+    lines.push('')
+    totalChars += point.length + trans.length + 3
+    idx++
+  }
+
+  // v1.0.23: 更有余味的收尾
+  lines.push('好了，今天就聊到这儿。')
+  lines.push('如果你对这个话题有自己的看法，欢迎留言讨论。')
+  lines.push('我们下期再见。')
+
+  return lines.join('\n')
 }
 
 // 通过在线 API 生成播客脚本（需要 LLM）
+// v1.0.23: 添加超时和空脚本校验，失败时降级到本地算法
 async function generatePodcastScriptOnline(content, podcastType) {
-  // 使用在线 web 端的 /api/podcast/generate 接口
   const onlineApiUrl = 'https://podcastai-plum.vercel.app/api/podcast/generate'
   const res = await fetch(onlineApiUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      content,
+      // v1.0.23: 在线 API 需要 type 参数
+      type: 'text',
+      text: content,
       podcastType,
       source: 'desktop',
     }),
+    signal: AbortSignal.timeout(90000),
   })
   if (!res.ok) {
     const errText = await res.text()
-    throw new Error(`${t('errScriptFailed')}: ${errText}`)
+    throw new Error(`在线 API 调用失败: ${errText}`)
   }
   const data = await res.json()
-  return data.script || data.content || ''
+  const script = data.script || data.content || ''
+  if (!script || script.trim().length < 10) {
+    throw new Error('在线 API 返回空脚本')
+  }
+  return script
+}
+
+// v1.0.21: 从 HTML 中提取正文内容（支持微信公众号）
+function extractMainContentFromHtml(html) {
+  // 1. 优先提取微信公众号正文容器
+  const weixinPatterns = [
+    /<div[^>]+id="js_content"[^>]*>([\s\S]*?)<\/div>\s*(?:<!--|<div[^>]+class="rich_media_tool")/i,
+    /<div[^>]+class="rich_media_content[^"]*"[^>]*>([\s\S]*?)<\/div>\s*(?:<!--|<div[^>]+class="rich_media_tool")/i,
+    /<div[^>]+id="js_content"[^>]*>([\s\S]*?)<\/div>/i,
+    /<div[^>]+class="rich_media_content[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
+  ]
+  for (const pattern of weixinPatterns) {
+    const match = html.match(pattern)
+    if (match && match[1] && match[1].trim().length > 100) {
+      const text = match[1]
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/\s+/g, ' ')
+        .trim()
+      if (text.length > 50) return text
+    }
+  }
+  // 2. 通用正文提取：移除 script/style/nav/header/footer，再去标签
+  let cleaned = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+    .replace(/<header[\s\S]*?<\/header>/gi, '')
+    .replace(/<footer[\s\S]*?<\/footer>/gi, '')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+  // 3. 尝试找 article 或 main 标签
+  const articleMatch = cleaned.match(/<article[^>]*>([\s\S]*?)<\/article>/i)
+  if (articleMatch && articleMatch[1].trim().length > 100) {
+    cleaned = articleMatch[1]
+  } else {
+    const mainMatch = cleaned.match(/<main[^>]*>([\s\S]*?)<\/main>/i)
+    if (mainMatch && mainMatch[1].trim().length > 100) {
+      cleaned = mainMatch[1]
+    }
+  }
+  return cleaned
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 // 从 URL 提取内容
 async function fetchUrlContent(url) {
-  const onlineApiUrl = 'https://podcastai-plum.vercel.app/api/podcast/extract-url'
-  try {
-    const res = await fetch(onlineApiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
-    })
-    if (res.ok) {
-      const data = await res.json()
-      return data.content || data.text || ''
-    }
-  } catch (e) {
-    console.warn('Online URL extract failed, trying direct fetch:', e)
-  }
-  // 降级：直接抓取
+  // v1.0.21: 直接抓取 + 本地正文提取（不依赖不存在的在线 extract-url 端点）
+  // 完整浏览器 UA，避免被微信公众号拦截
   const res = await fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' },
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    },
     signal: AbortSignal.timeout(15000),
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const html = await res.text()
-  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+  const content = extractMainContentFromHtml(html)
+  if (!content || content.length < 50) {
+    throw new Error('URL 内容提取失败：抓取到的页面无有效正文')
+  }
+  return content
 }
 
 // 读取文件内容
@@ -888,7 +1243,7 @@ function renderOfflineBanner() {
       </div>
       <div class="flex items-center gap-2 shrink-0">
         ${isAutoStarting ? '' : `
-          <button onclick="startServiceAction()" disabled="${sm.isStarting}" class="px-3 py-1.5 text-xs bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white rounded-md transition flex items-center gap-1.5">
+          <button onclick="startServiceAction()" ${sm.isStarting ? 'disabled' : ''} class="px-3 py-1.5 text-xs bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white rounded-md transition flex items-center gap-1.5">
             ${sm.isStarting ? `
               <svg class="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
               ${t('startingService')}
@@ -1001,7 +1356,7 @@ function renderPodcastView() {
       </div>
 
       <!-- Generate button -->
-      <button onclick="generatePodcast()" disabled="${state.isGenerating}" class="w-full py-3.5 rounded-xl bg-gradient-to-r from-primary-600 to-purple-600 hover:from-primary-500 hover:to-purple-500 text-white font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+      <button onclick="generatePodcast()" ${state.isGenerating ? 'disabled' : ''} class="w-full py-3.5 rounded-xl bg-gradient-to-r from-primary-600 to-purple-600 hover:from-primary-500 hover:to-purple-500 text-white font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2">
         ${state.isGenerating ? `
           <svg class="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
@@ -1016,6 +1371,10 @@ function renderPodcastView() {
 
       <!-- Script preview -->
       ${state.scriptText ? renderScriptPreview() : ''}
+
+      <!-- v1.0.26: 合成状态/错误显示区域 -->
+      ${state.synthError ? renderSynthError() : ''}
+      ${state.isGenerating && state.scriptText && !state.audioUrl ? renderSynthStatus() : ''}
 
       <!-- Audio player -->
       ${state.audioUrl ? renderAudioPlayer() : ''}
@@ -1079,25 +1438,54 @@ function renderVoiceSelect(target) {
   const currentValue = state[target]
   const systemVoices = VOICE_TEMPLATES
   const cloneVoices = state.clones
+  const isLoading = state.podcastVoiceLoading === target
+  const isPlaying = state.podcastVoicePlaying === target
 
   return `
-    <select onchange="state.${target} = this.value" class="w-full px-3 py-2 bg-white border border-stone-200 rounded-lg text-stone-900 text-sm focus:border-primary-600 focus:outline-none">
-      <optgroup label="${t('systemVoice')}">
-        ${systemVoices.map(v => `<option value="${v.id}" ${currentValue === v.id ? 'selected' : ''}>${voiceName(v)}</option>`).join('')}
-      </optgroup>
-      ${cloneVoices.length > 0 ? `
-        <optgroup label="${t('cloneVoice')}">
-          ${cloneVoices.map(c => `<option value="clone-${c.id}" ${currentValue === `clone-${c.id}` ? 'selected' : ''}>${escapeHtml(c.name)} (${c.gender === 'male' ? t('cloneGenderMale') : t('cloneGenderFemale')})</option>`).join('')}
+    <div class="flex gap-2">
+      <select onchange="state.${target} = this.value; render()" class="flex-1 px-3 py-2 bg-white border border-stone-200 rounded-lg text-stone-900 text-sm focus:border-primary-600 focus:outline-none">
+        <optgroup label="${t('systemVoice')}">
+          ${systemVoices.map(v => `<option value="${v.id}" ${currentValue === v.id ? 'selected' : ''}>${voiceName(v)}</option>`).join('')}
         </optgroup>
-      ` : ''}
-    </select>
+        ${cloneVoices.length > 0 ? `
+          <optgroup label="${t('cloneVoice')}">
+            ${cloneVoices.map(c => `<option value="clone-${c.id}" ${currentValue === `clone-${c.id}` ? 'selected' : ''}>${escapeHtml(c.name)} (${c.gender === 'male' ? t('cloneGenderMale') : t('cloneGenderFemale')})</option>`).join('')}
+          </optgroup>
+        ` : ''}
+      </select>
+      <button onclick="previewPodcastVoice('${target}')" ${isLoading ? 'disabled' : ''} class="px-3 py-2 rounded-lg border border-stone-200 hover:border-primary-600 hover:text-primary-600 text-stone-500 transition disabled:opacity-50 flex items-center justify-center" title="${t('clonePreview')}">
+        ${isLoading ? `
+          <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+        ` : isPlaying ? `
+          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"></path></svg>
+        ` : `
+          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"></path></svg>
+        `}
+      </button>
+    </div>
   `
 }
 
 function renderProgress() {
   const { stage, current, total } = state.progress
-  const percent = total > 0 ? Math.round((current / total) * 100) : 0
-  const stageText = stage === 'script' ? t('scriptGenerating') : (stage === 'synth' ? t('segmentProgress', { current, total }) : t('audioSynthesizing'))
+  // v1.0.16: 进度计算修复 — 段合成阶段上限 90%，避免 1 段时 segment_start 立即显示 100% 造成卡死假象
+  // - synth 阶段：current/total * 90%（最高 90%，留 10% 给最终合并）
+  // - finalizing 阶段：95%
+  // - 完成：100%（由 audioUrl 状态触发，不在这里显示）
+  let percent
+  if (state.synthFinalizing) {
+    percent = 95
+  } else if (stage === 'synth' && total > 0) {
+    percent = Math.min(90, Math.round((current / total) * 90))
+  } else if (stage === 'script') {
+    percent = total > 0 ? Math.round((current / total) * 90) : 0
+  } else {
+    percent = 0
+  }
+  // v1.0.15: finalizing 阶段显示"正在合成最终音频..."
+  const stageText = state.synthFinalizing
+    ? t('audioFinalizing')
+    : (stage === 'script' ? t('scriptGenerating') : (stage === 'synth' ? t('segmentProgress', { current, total }) : t('audioSynthesizing')))
 
   return `
     <div class="mt-4 p-4 bg-white/80 rounded-xl border border-stone-200">
@@ -1133,14 +1521,80 @@ function renderAudioPlayer() {
     <div class="mt-6 p-5 bg-gradient-to-br from-primary-50 to-purple-50 rounded-xl border border-stone-200">
       <div class="flex items-center justify-between mb-3">
         <h3 class="text-sm font-semibold">${t('audioPlayer')}</h3>
-        <a href="${state.audioUrl}" download="podcast-${Date.now()}.wav" class="text-xs text-primary-600 hover:text-primary-700 flex items-center gap-1">
+        <button onclick="downloadPodcast()" class="text-xs text-primary-600 hover:text-primary-700 flex items-center gap-1">
           <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path d="M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
           ${t('download')}
-        </a>
+        </button>
       </div>
-      <audio controls src="${state.audioUrl}" class="w-full"></audio>
+      <audio controls preload="auto" src="${state.audioUrl}" class="w-full"
+        onerror="console.error('[Audio] Error:', event.target.error); this.nextElementSibling?.classList.remove('hidden'); this.nextElementSibling && (this.nextElementSibling.textContent = 'Audio load error: ' + (event.target.error?.message || 'unknown'))"
+        onloadedmetadata="console.log('[Audio] Duration:', event.target.duration, 's')"
+      ></audio>
+      <div class="hidden mt-2 text-xs text-red-600"></div>
     </div>
   `
+}
+
+// v1.0.26: 合成错误显示区域（持久显示，不依赖 toast）
+function renderSynthError() {
+  return `
+    <div class="mt-4 p-4 bg-red-50 border border-red-200 rounded-xl">
+      <div class="flex items-start gap-3">
+        <svg class="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+          <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+        </svg>
+        <div class="flex-1">
+          <h4 class="text-sm font-semibold text-red-800 mb-1">音频合成失败</h4>
+          <p class="text-xs text-red-700 break-all">${escapeHtml(state.synthError)}</p>
+          <button onclick="state.synthError = null; render()" class="mt-2 text-xs text-red-600 hover:text-red-800 underline">
+            关闭
+          </button>
+        </div>
+      </div>
+    </div>
+  `
+}
+
+// v1.0.26: 合成进行中状态显示（在脚本下方）
+function renderSynthStatus() {
+  const stageText = state.synthFinalizing
+    ? '正在合成最终音频，请稍候...'
+    : state.progress && state.progress.total > 0
+      ? `正在合成音频 ${state.progress.current}/${state.progress.total} 段`
+      : '正在准备合成...'
+  return `
+    <div class="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-xl">
+      <div class="flex items-center gap-3">
+        <svg class="animate-spin h-5 w-5 text-blue-600 flex-shrink-0" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        </svg>
+        <div>
+          <h4 class="text-sm font-semibold text-blue-800">${stageText}</h4>
+          <p class="text-xs text-blue-600 mt-0.5">合成过程可能需要几分钟，请勿关闭窗口</p>
+        </div>
+      </div>
+    </div>
+  `
+}
+
+// v1.0.20: 通过 IPC 下载音频文件（使用已保存的 audioBuffer）
+window.downloadPodcast = async function() {
+  if (!state.audioBuffer) {
+    toast(t('errNoAudio') || 'No audio to download', 'error')
+    return
+  }
+  try {
+    const defaultName = `podcast-${Date.now()}.wav`
+    const result = await window.podcastai.dialog.saveFile(defaultName, state.audioBuffer)
+    if (result.success) {
+      toast(t('downloadSuccess') || 'Downloaded successfully', 'success')
+    } else if (!result.canceled) {
+      toast(result.error || 'Download failed', 'error')
+    }
+  } catch (e) {
+    toast(e.message || 'Download failed', 'error')
+  }
 }
 
 // ════════════════════════════════════════════════════════════
@@ -1239,8 +1693,8 @@ function renderCloneView() {
             <input id="clone-audio-input" type="file" accept="audio/wav,audio/mp3,audio/m4a,audio/aac,audio/*" class="hidden" onchange="handleCloneAudioUpload(this.files[0])">
           </div>
 
-          <button onclick="${state.isCloning ? '' : (canClone ? 'createCloneAction()' : 'switchView(\\'settings\\')')}"
-                  disabled="${state.isCloning}"
+          <button onclick="handleCloneButtonClick()"
+                  ${(state.isCloning || (!canClone && !modelDownloading)) ? 'disabled' : ''}
                   class="w-full py-3 rounded-xl ${canClone ? 'bg-gradient-to-r from-primary-600 to-purple-600 hover:from-primary-500 hover:to-purple-500 text-white' : 'bg-stone-200 text-stone-500 hover:bg-stone-300'} font-semibold transition flex items-center justify-center gap-2">
             ${state.isCloning ? `
               <svg class="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
@@ -1275,6 +1729,7 @@ function renderCloneView() {
 
 function renderCloneItem(clone) {
   const isPlaying = state.previewPlayingId === clone.id
+  const isLoading = state.previewLoadingId === clone.id
   return `
     <div class="flex items-center justify-between p-3 bg-white rounded-lg border border-stone-200 hover:border-stone-300 transition">
       <div class="flex-1 min-w-0">
@@ -1284,8 +1739,10 @@ function renderCloneItem(clone) {
         </div>
       </div>
       <div class="flex items-center gap-1">
-        <button onclick="previewClone('${clone.id}')" class="p-2 text-stone-500 hover:text-primary-600 transition" title="${t('clonePreview')}">
-          ${isPlaying ? `
+        <button onclick="previewClone('${clone.id}')" ${isLoading ? 'disabled' : ''} class="p-2 text-stone-500 hover:text-primary-600 disabled:opacity-50 transition" title="${t('clonePreview')}">
+          ${isLoading ? `
+            <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+          ` : isPlaying ? `
             <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"></path></svg>
           ` : `
             <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"></path></svg>
@@ -1415,7 +1872,7 @@ function renderSettingsView() {
           <div class="mt-4 pt-4 border-t border-stone-200 space-y-3">
             <div class="flex items-center gap-2">
               ${sm.processRunning ? `
-                <button onclick="stopServiceAction()" disabled="${sm.isStopping}" class="px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white text-sm rounded-lg transition flex items-center gap-2">
+                <button onclick="stopServiceAction()" ${sm.isStopping ? 'disabled' : ''} class="px-4 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white text-sm rounded-lg transition flex items-center gap-2">
                   ${sm.isStopping ? `<svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>${t('stoppingService')}` : `
                   <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h12v12H6z"></path></svg>
                   ${t('stopService')}
@@ -1426,7 +1883,7 @@ function renderSettingsView() {
                   ${t('serviceRunning')} (PID ${sm.processPid || '?'})
                 </span>
               ` : `
-                <button onclick="startServiceAction()" disabled="${sm.isStarting || !d.python}" class="px-4 py-2 bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm rounded-lg transition flex items-center gap-2">
+                <button onclick="startServiceAction()" ${(sm.isStarting || !d.python) ? 'disabled' : ''} class="px-4 py-2 bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm rounded-lg transition flex items-center gap-2">
                   ${sm.isStarting ? `<svg class="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>${t('startingService')}` : `
                   <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"></path></svg>
                   ${t('startService')}
@@ -1650,6 +2107,32 @@ window.switchView = function(view) {
   else render()
 }
 
+window.handleCloneButtonClick = function() {
+  if (state.isCloning) return
+  // 修复：state.model.ready / state.model.isDownloading 不存在
+  // 实际数据结构：state.model.status.ready / state.model.downloadState.isDownloading
+  const modelReady = !!(state.model && state.model.status && state.model.status.ready)
+  const modelDownloading = !!(state.model && state.model.downloadState && state.model.downloadState.isDownloading)
+
+  // 服务未就绪时提示用户等待（不静默失败）
+  if (state.serviceStatus === 'offline') {
+    const sm = state.serviceManager
+    if (sm.processRunning) {
+      toast(t('serviceAutoStarting') || '语音服务正在启动中，请稍候...', 'info')
+    } else {
+      toast(t('errServiceUnavailable'), 'error')
+    }
+    return
+  }
+
+  if (modelReady && !modelDownloading) {
+    createCloneAction()
+  } else if (!modelDownloading) {
+    // 跳转到设置页面下载模型
+    switchView('settings')
+  }
+}
+
 window.setLocale = function(locale) {
   state.locale = locale
   localStorage.setItem('podcastai-locale', locale)
@@ -1716,47 +2199,70 @@ window.generatePodcast = async function() {
     content = state.uploadedFileContent
   }
 
-  // 检查服务状态
-  if (state.serviceStatus === 'offline') {
-    toast(t('errServiceUnavailable'), 'error')
-    return
+  // v1.0.25: 改进服务状态检查
+  // 服务可能正在后台启动中（main.ts 的 startVoiceService 是异步的）
+  // 不要直接 return，而是先尝试重新检测一次
+  if (state.serviceStatus === 'offline' || state.serviceStatus === 'unknown') {
+    console.log('[Podcast] Service status is', state.serviceStatus, ', re-checking...')
+    toast('正在检测语音服务状态，请稍候...', 'info')
+    await checkServiceHealth()
+    if (state.serviceStatus === 'offline') {
+      toast('语音服务未启动，正在后台启动中，请等待 1-2 分钟后重试', 'error')
+      return
+    }
+    if (state.serviceStatus === 'unknown') {
+      toast('语音服务状态未知，请稍后重试', 'error')
+      return
+    }
   }
 
   state.isGenerating = true
   state.progress = { stage: 'script', current: 0, total: 0 }
   render()
+  toast('开始生成播客...', 'info')
 
   try {
     // 1. 获取内容
     if (state.inputMethod === 'url') {
       state.progress.stage = 'script'
       render()
+      toast('正在抓取链接内容...', 'info')
       content = await fetchUrlContent(state.urlInput)
-      if (!content) {
-        throw new Error(t('errScriptFailed'))
+      if (!content || content.trim().length < 10) {
+        // v1.0.21: URL 抓取失败用明确的错误信息，而不是误导为"脚本生成失败"
+        throw new Error('URL 内容抓取失败：无法从该链接提取有效正文')
       }
+      console.log('[Podcast] URL content fetched:', content.length, 'chars')
     }
 
-    // 2. 生成脚本（通过在线 LLM API）
+    // 2. 生成脚本
+    // v1.0.24: 完全放弃在线 API（需要 session token 认证，桌面客户端无法使用）
+    // 直接使用本地算法生成播客脚本
     state.progress = { stage: 'script', current: 0, total: 0 }
     render()
+    toast('正在生成播客脚本...', 'info')
     let script = ''
-    try {
-      script = await generatePodcastScriptOnline(content, state.podcastType)
-    } catch (e) {
-      console.warn('Online script generation failed, using content directly:', e)
-      // 降级：直接使用内容作为脚本
-      script = content.slice(0, 10000)
+    script = generatePodcastScriptLocal(content, state.podcastType)
+    console.log('[Podcast] Script generated via local algorithm:', script.length, 'chars')
+
+    // v1.0.24: 合成前校验脚本非空，且必须包含有效对话内容
+    if (!script || script.trim().length < 20) {
+      throw new Error('脚本内容为空或太短，无法生成播客音频（请检查输入内容是否有效）')
     }
 
     state.scriptText = script
+    state.synthError = null // v1.0.26: 清除之前的错误
     render()
 
     // 3. 合成音频
+    toast('开始合成音频（可能需要几分钟）...', 'info')
     await synthesizeAudioFromScript(script)
   } catch (err) {
     console.error('Generate podcast error:', err)
-    toast(err.message || t('errSynthFailed'), 'error')
+    const errMsg = err.message || t('errSynthFailed') || '生成失败'
+    toast(errMsg, 'error')
+    // v1.0.26: 将错误写入 state.synthError，在脚本下方持久显示
+    state.synthError = errMsg
   } finally {
     state.isGenerating = false
     render()
@@ -1768,24 +2274,46 @@ window.synthesizeOnly = async function() {
     toast(t('errNoScript'), 'error')
     return
   }
-  if (state.serviceStatus === 'offline') {
-    toast(t('errServiceUnavailable'), 'error')
-    return
+  // v1.0.25: 改进服务状态检查（与 generatePodcast 一致）
+  if (state.serviceStatus === 'offline' || state.serviceStatus === 'unknown') {
+    toast('正在检测语音服务状态...', 'info')
+    await checkServiceHealth()
+    if (state.serviceStatus !== 'online' && state.serviceStatus !== 'busy') {
+      toast('语音服务未启动，请等待服务启动后重试', 'error')
+      return
+    }
   }
   state.isGenerating = true
   state.progress = { stage: 'synth', current: 0, total: 0 }
+  state.synthFinalizing = false
+  state.synthError = null
   render()
   try {
+    toast('开始合成音频...', 'info')
     await synthesizeAudioFromScript(state.scriptText)
   } catch (err) {
-    toast(err.message || t('errSynthFailed'), 'error')
+    console.error('[Podcast] Synthesize only error:', err)
+    const errMsg = err.message || t('errSynthFailed') || '合成失败'
+    toast(errMsg, 'error')
+    state.synthError = errMsg
   } finally {
     state.isGenerating = false
+    state.synthFinalizing = false
     render()
   }
 }
 
 async function synthesizeAudioFromScript(script) {
+  // v1.0.24: 增强错误处理，每个失败点都有明确提示
+  if (!script || script.trim().length < 10) {
+    throw new Error('脚本内容为空，无法合成音频')
+  }
+
+  // v1.0.24: 检查 voice-service 是否在线
+  if (state.serviceStatus === 'offline' || !state.serviceUrl) {
+    throw new Error('语音服务未启动，无法合成音频（请在设置中启动语音服务）')
+  }
+
   // 解析 clone IDs
   const cloneIds = []
   if (state.voice1 && state.voice1.startsWith('clone-')) {
@@ -1796,43 +2324,117 @@ async function synthesizeAudioFromScript(script) {
   }
 
   state.progress = { stage: 'synth', current: 0, total: 0 }
+  state.synthFinalizing = false
   render()
 
-  const audioBuffer = await synthesizePodcast(
-    script,
-    cloneIds,
-    state.podcastType,
-    state.voice1,
-    state.voice2,
-    (p) => {
-      state.progress = { stage: 'synth', current: p.current, total: p.total }
-      render()
+  console.log('[Podcast] Starting synthesis, script length:', script.length, 'cloneIds:', cloneIds)
+
+  // v1.0.28: 合成重试机制
+  // 后端 Python 进程可能因 OOM/segfault 崩溃，导致 "BodyStreamBuffer was aborted"
+  // main.ts 会自动重启服务，这里在检测到崩溃错误时等待服务恢复后重试
+  const MAX_SYNTH_RETRIES = 2
+  let audioResult
+  let lastSynthError = null
+
+  for (let attempt = 0; attempt <= MAX_SYNTH_RETRIES; attempt++) {
+    try {
+      if (attempt > 0) {
+        console.log(`[Podcast] Retrying synthesis (attempt ${attempt + 1}/${MAX_SYNTH_RETRIES + 1})...`)
+        toast(`服务异常，正在等待恢复后重试 (${attempt + 1}/${MAX_SYNTH_RETRIES + 1})...`, 'info')
+        // 等待服务自动重启（main.ts 的 auto-restart 会在 2 秒后启动）
+        await new Promise(r => setTimeout(r, 5000))
+        // 轮询等待服务恢复（最多等 60 秒）
+        let waitCount = 0
+        while (waitCount < 30) {
+          await checkServiceHealth()
+          if (state.serviceStatus === 'online' || state.serviceStatus === 'busy') {
+            break
+          }
+          await new Promise(r => setTimeout(r, 2000))
+          waitCount++
+        }
+        if (state.serviceStatus !== 'online' && state.serviceStatus !== 'busy') {
+          throw new Error('语音服务未能自动恢复，请重启应用后重试')
+        }
+        console.log('[Podcast] Service recovered, retrying synthesis')
+        // 重置进度状态
+        state.progress = { stage: 'synth', current: 0, total: 0 }
+        state.synthFinalizing = false
+        render()
+      }
+
+      audioResult = await synthesizePodcast(
+        script,
+        cloneIds,
+        state.podcastType,
+        state.voice1,
+        state.voice2,
+        (p) => {
+          if (p.stage === 'finalizing') {
+            state.synthFinalizing = true
+          } else {
+            state.synthFinalizing = false
+            state.progress = { stage: 'synth', current: p.current, total: p.total }
+          }
+          render()
+        }
+      )
+      // 合成成功，跳出重试循环
+      break
+    } catch (synthErr) {
+      lastSynthError = synthErr
+      console.error(`[Podcast] Synthesis attempt ${attempt + 1} failed:`, synthErr)
+      const errMsg = (synthErr.message || '').toLowerCase()
+      // 判断是否为可重试的错误（进程崩溃/网络中断类）
+      const isRetryable = errMsg.includes('bodystreambuffer') ||
+                         errMsg.includes('aborted') ||
+                         errMsg.includes('failed to fetch') ||
+                         errMsg.includes('network') ||
+                         errMsg.includes('fetch failed') ||
+                         errMsg.includes('连接超时') ||
+                         errMsg.includes('连接中断') ||
+                         errMsg.includes('broken pipe') ||
+                         errMsg.includes('流结束')
+      if (!isRetryable || attempt === MAX_SYNTH_RETRIES) {
+        throw new Error(`音频合成失败: ${synthErr.message || synthErr}`)
+      }
+      // 可重试，继续循环
     }
-  )
-
-  if (audioBuffer) {
-    // 创建 blob URL
-    const blob = new Blob([audioBuffer], { type: 'audio/wav' })
-    if (state.audioUrl) URL.revokeObjectURL(state.audioUrl)
-    state.audioUrl = URL.createObjectURL(blob)
-
-    // 保存到历史记录
-    const historyItem = {
-      id: Date.now().toString(),
-      title: state.urlInput || state.uploadedFile?.name || (state.locale === 'zh' ? '文本播客' : 'Text Podcast'),
-      script,
-      audioUrl: state.audioUrl,
-      duration: Math.floor(script.length / 4),
-      createdAt: Date.now(),
-    }
-    state.history.unshift(historyItem)
-    if (state.history.length > 50) state.history = state.history.slice(0, 50)
-    localStorage.setItem('podcastai-history', JSON.stringify(state.history))
-
-    toast(t('synthesisComplete'), 'success')
-  } else {
-    throw new Error(t('errSynthFailed'))
   }
+
+  if (!audioResult || !(audioResult instanceof ArrayBuffer) || audioResult.byteLength === 0) {
+    console.error('[Podcast] No audio result returned:', audioResult)
+    throw new Error('音频合成返回空结果，请检查语音服务是否正常运行')
+  }
+
+  // v1.0.20: 回退到 ArrayBuffer + blob URL 方案
+  // HTTP URL 方案在 Electron <audio> 中时长为 0，blob URL 更可靠
+  state.audioBuffer = audioResult
+  const blob = new Blob([audioResult], { type: 'audio/wav' })
+  if (state.audioUrl && state.audioUrl.startsWith('blob:')) {
+    URL.revokeObjectURL(state.audioUrl)
+  }
+  state.audioUrl = URL.createObjectURL(blob)
+  console.log('[Podcast] Blob URL created:', state.audioUrl, 'size:', audioResult.byteLength)
+  state.synthError = null // v1.0.26: 合成成功，清除错误
+  toast('音频合成完成！', 'success')
+  // v1.0.25: 显式触发 render，确保播放器立即显示
+  render()
+
+  // 保存到历史记录
+  const historyItem = {
+    id: Date.now().toString(),
+    title: state.urlInput || state.uploadedFile?.name || (state.locale === 'zh' ? '文本播客' : 'Text Podcast'),
+    script,
+    audioUrl: state.audioUrl,
+    duration: Math.floor(script.length / 4),
+    createdAt: Date.now(),
+  }
+  state.history.unshift(historyItem)
+  if (state.history.length > 50) state.history = state.history.slice(0, 50)
+  localStorage.setItem('podcastai-history', JSON.stringify(state.history))
+
+  toast(t('synthesisComplete'), 'success')
 }
 
 window.createCloneAction = async function() {
@@ -1894,9 +2496,54 @@ window.previewClone = async function(cloneId) {
     return
   }
 
+  // v1.0.10: 克隆完成后后台已在生成预览，这里轮询直到克隆声音就绪
+  // 不再返回原声，确保用户听到的是克隆后的声音
+  state.previewLoadingId = cloneId
+  render()
+
+  const maxAttempts = 90  // v1.0.14: 90 次 × 1 秒 = 90 秒（预览约 13 秒生成完毕）
+  const waitMs = (ms) => new Promise(r => setTimeout(r, ms))
+
   try {
-    const res = await fetch(`${state.serviceUrl}/preview/${cloneId}`)
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    let res = null
+    for (let i = 0; i < maxAttempts; i++) {
+      res = await fetch(`${state.serviceUrl}/preview/${cloneId}`)
+      if (res.status === 200) {
+        // 克隆声音就绪
+        break
+      }
+      if (res.status === 202) {
+        // v1.0.11: 解析响应体，检查是否实际为 failed 状态
+        try {
+          const body = await res.json()
+          if (body && body.status === 'failed') {
+            throw new Error(body.message || 'Preview generation failed')
+          }
+        } catch (parseErr) {
+          // JSON 解析失败说明确实是 generating，继续等待
+        }
+        // v1.0.14: 轮询间隔从 2秒 → 1秒（预览约 13 秒，1 秒粒度足够）
+        await waitMs(1000)
+        continue
+      }
+      // v1.0.11: 500 状态码（任务失败）直接报错，不再死循环
+      if (res.status === 500) {
+        let errMsg = 'Preview generation failed'
+        try {
+          const body = await res.json()
+          if (body && body.message) errMsg = body.message
+        } catch {}
+        throw new Error(errMsg)
+      }
+      // 其他错误状态
+      throw new Error(`HTTP ${res.status}`)
+    }
+
+    if (!res || res.status !== 200) {
+      throw new Error('Preview generation timeout')
+    }
+
+    state.previewLoadingId = null
     const blob = await res.blob()
     const url = URL.createObjectURL(blob)
 
@@ -1913,7 +2560,9 @@ window.previewClone = async function(cloneId) {
     state.previewPlayingId = cloneId
     render()
   } catch (err) {
+    state.previewLoadingId = null
     toast(err.message || t('errNetwork'), 'error')
+    render()
   }
 }
 
@@ -1925,6 +2574,93 @@ window.deleteClone = async function(cloneId) {
     toast(t('deleteSuccess'), 'success')
   } catch (err) {
     toast(err.message || t('errNetwork'), 'error')
+  }
+}
+
+// v1.0.10: 播客页面声音试听（克隆声音支持轮询等待生成）
+window.previewPodcastVoice = async function(target) {
+  // 正在播放则停止
+  if (state.podcastVoicePlaying === target) {
+    if (state.podcastVoiceAudio) {
+      state.podcastVoiceAudio.pause()
+      state.podcastVoiceAudio = null
+    }
+    state.podcastVoicePlaying = null
+    render()
+    return
+  }
+
+  const voiceId = state[target]
+  if (!voiceId) return
+
+  state.podcastVoiceLoading = target
+  render()
+
+  const waitMs = (ms) => new Promise(r => setTimeout(r, ms))
+
+  try {
+    let url
+    if (voiceId.startsWith('clone-')) {
+      // 克隆声音 — 轮询 /preview/{clone_id} 直到克隆声音就绪
+      const cloneId = voiceId.replace('clone-', '')
+      const maxAttempts = 90
+      let res = null
+      for (let i = 0; i < maxAttempts; i++) {
+        res = await fetch(`${state.serviceUrl}/preview/${cloneId}`)
+        if (res.status === 200) break
+        if (res.status === 202) {
+          // v1.0.11: 解析响应体，检查是否实际为 failed 状态
+          try {
+            const body = await res.json()
+            if (body && body.status === 'failed') {
+              throw new Error(body.message || 'Preview generation failed')
+            }
+          } catch (parseErr) {
+            // JSON 解析失败说明确实是 generating
+          }
+          // v1.0.14: 轮询间隔从 2秒 → 1秒
+          await waitMs(1000)
+          continue
+        }
+        // v1.0.11: 500 状态码（任务失败）直接报错
+        if (res.status === 500) {
+          let errMsg = 'Preview generation failed'
+          try {
+            const body = await res.json()
+            if (body && body.message) errMsg = body.message
+          } catch {}
+          throw new Error(errMsg)
+        }
+        throw new Error(`HTTP ${res.status}`)
+      }
+      if (!res || res.status !== 200) throw new Error('Preview generation timeout')
+      const blob = await res.blob()
+      url = URL.createObjectURL(blob)
+    } else {
+      // 系统声音 — 调用 /system-voice-preview/{voice_id}
+      const res = await fetch(`${state.serviceUrl}/system-voice-preview/${voiceId}`)
+      if (res.status !== 200) throw new Error(`HTTP ${res.status}`)
+      const blob = await res.blob()
+      url = URL.createObjectURL(blob)
+    }
+
+    state.podcastVoiceLoading = null
+    if (state.podcastVoiceAudio) {
+      state.podcastVoiceAudio.pause()
+    }
+    state.podcastVoiceAudio = new Audio(url)
+    state.podcastVoiceAudio.onended = () => {
+      state.podcastVoicePlaying = null
+      URL.revokeObjectURL(url)
+      render()
+    }
+    state.podcastVoiceAudio.play()
+    state.podcastVoicePlaying = target
+    render()
+  } catch (err) {
+    state.podcastVoiceLoading = null
+    toast(err.message || t('errNetwork'), 'error')
+    render()
   }
 }
 
@@ -2166,10 +2902,184 @@ async function refreshModelStatus() {
 }
 
 // ════════════════════════════════════════════════════════════
+// v1.0.31: 认证系统
+// 强制登录：无 token 时显示登录覆盖层，阻止访问主应用
+// ════════════════════════════════════════════════════════════
+
+/**
+ * 显示登录覆盖层
+ */
+function showAuthOverlay() {
+  const overlay = document.getElementById('auth-overlay')
+  if (overlay) overlay.classList.remove('hidden')
+}
+
+/**
+ * 隐藏登录覆盖层（认证成功后调用）
+ */
+function hideAuthOverlay() {
+  const overlay = document.getElementById('auth-overlay')
+  if (overlay) overlay.classList.add('hidden')
+}
+
+/**
+ * 显示认证状态信息
+ */
+function setAuthStatus(message, type = 'info') {
+  const el = document.getElementById('auth-status')
+  if (!el) return
+  el.textContent = message
+  el.className = `auth-status visible ${type}`
+}
+
+/**
+ * 清除认证状态信息
+ */
+function clearAuthStatus() {
+  const el = document.getElementById('auth-status')
+  if (!el) return
+  el.textContent = ''
+  el.className = 'auth-status'
+}
+
+/**
+ * 更新登录按钮状态
+ */
+function setAuthButtonState(options = {}) {
+  const btn = document.getElementById('auth-login-btn')
+  const btnText = document.getElementById('auth-login-btn-text')
+  const subtitle = document.getElementById('auth-subtitle')
+  const userInfo = document.getElementById('auth-user-info')
+  const userEmail = document.getElementById('auth-user-email')
+  const signoutBtn = document.getElementById('auth-signout-btn')
+
+  if (!btn) return
+
+  if (options.loading) {
+    btn.disabled = true
+    if (btnText) btnText.innerHTML = `<span class="auth-spinner"></span>等待网页登录...`
+    if (subtitle) subtitle.textContent = '请在浏览器中完成登录，完成后将自动返回'
+  } else {
+    btn.disabled = false
+    if (btnText) btnText.textContent = '打开网页登录'
+    if (subtitle) subtitle.textContent = '登录后开始创建精彩播客'
+  }
+
+  // 已登录用户显示信息
+  if (state.auth.isAuthenticated && state.auth.email) {
+    if (userInfo) userInfo.style.display = 'block'
+    if (userEmail) userEmail.textContent = state.auth.email
+    if (btnText) btnText.textContent = '切换账号'
+    if (subtitle) subtitle.textContent = '已登录，正在进入应用...'
+  } else {
+    if (userInfo) userInfo.style.display = 'none'
+  }
+
+  // 退出登录按钮
+  if (signoutBtn) {
+    signoutBtn.onclick = async () => {
+      if (window.podcastai?.auth?.signOut) {
+        await window.podcastai.auth.signOut()
+      }
+      state.auth = { isAuthenticated: false, token: null, email: null, name: null, userId: null }
+      setAuthButtonState({})
+      setAuthStatus('已退出登录，请重新登录', 'info')
+    }
+  }
+}
+
+/**
+ * 初始化认证状态
+ * - 检查是否有持久化的 token
+ * - 注册登录成功/退出登录事件监听
+ * - 绑定登录按钮点击事件
+ */
+async function initAuth() {
+  // 注册事件监听
+  if (window.podcastai?.auth?.onLoginSuccess) {
+    window.podcastai.auth.onLoginSuccess((info) => {
+      state.auth = {
+        isAuthenticated: true,
+        token: info.token,
+        email: info.email || null,
+        name: info.name || null,
+        userId: info.userId || null,
+      }
+      setAuthStatus('登录成功！正在进入应用...', 'success')
+      setAuthButtonState({ loading: false })
+      // 短暂延迟后隐藏覆盖层
+      setTimeout(() => {
+        hideAuthOverlay()
+        clearAuthStatus()
+      }, 800)
+    })
+  }
+
+  if (window.podcastai?.auth?.onLogout) {
+    window.podcastai.auth.onLogout(() => {
+      state.auth = { isAuthenticated: false, token: null, email: null, name: null, userId: null }
+      showAuthOverlay()
+      setAuthButtonState({})
+      setAuthStatus('已退出登录', 'info')
+    })
+  }
+
+  // 绑定登录按钮
+  const loginBtn = document.getElementById('auth-login-btn')
+  if (loginBtn) {
+    loginBtn.onclick = async () => {
+      clearAuthStatus()
+      setAuthButtonState({ loading: true })
+      if (window.podcastai?.auth?.openWebLogin) {
+        const result = await window.podcastai.auth.openWebLogin()
+        if (!result?.success) {
+          setAuthStatus('打开网页失败：' + (result?.error || '未知错误'), 'error')
+          setAuthButtonState({ loading: false })
+        } else {
+          setAuthStatus('已打开浏览器，请在网页中完成登录', 'info')
+        }
+      } else {
+        setAuthStatus('认证系统未就绪，请重启应用', 'error')
+        setAuthButtonState({ loading: false })
+      }
+    }
+  }
+
+  // 检查持久化的 token
+  try {
+    if (window.podcastai?.auth?.getState) {
+      const authState = await window.podcastai.auth.getState()
+      if (authState?.token) {
+        state.auth = {
+          isAuthenticated: true,
+          token: authState.token,
+          email: authState.email || null,
+          name: authState.name || null,
+          userId: authState.userId || null,
+        }
+        // 已登录，直接隐藏覆盖层
+        hideAuthOverlay()
+        return
+      }
+    }
+  } catch (err) {
+    console.warn('[AUTH] Failed to check auth state:', err)
+  }
+
+  // 未登录，显示覆盖层
+  showAuthOverlay()
+  setAuthButtonState({})
+}
+
+// ════════════════════════════════════════════════════════════
 // 初始化
 // ════════════════════════════════════════════════════════════
 async function init() {
   document.documentElement.lang = state.locale
+
+  // v1.0.31: 启动时先校验登录状态
+  await initAuth()
+
   render()
 
   // 加载客户端版本信息
@@ -2246,27 +3156,72 @@ async function init() {
   if (state.serviceStatus !== 'offline') {
     await fetchClones()
   }
-  // 定期检查服务状态
+  // 定期检查服务状态（缩短到 10 秒，更快感知服务就绪）
   setInterval(async () => {
     const prev = state.serviceStatus
     await checkServiceHealth()
-    if (prev !== state.serviceStatus) render()
-  }, 30000)
-
-  // v1.0.4: 如果服务进程在运行但 HTTP 还未就绪，启动轮询加速状态切换
-  if (state.serviceManager.processRunning && state.serviceStatus === 'offline') {
-    const poll = async (attempts) => {
-      if (attempts >= 30) return
-      const ok = await checkServiceHealth()
-      if (ok) {
+    if (prev !== state.serviceStatus) {
+      if (state.serviceStatus !== 'offline' && prev === 'offline') {
         await fetchClones()
-        render()
-      } else {
-        setTimeout(() => poll(attempts + 1), 1500)
       }
+      render()
     }
-    setTimeout(() => poll(0), 1500)
+  }, 10000)
+
+  // 监听主进程的服务状态变化事件（自动启动完成后触发）
+  if (window.podcastai?.service?.onStateChanged) {
+    window.podcastai.service.onStateChanged(async (info) => {
+      // 刷新进程状态（处理 init() 在服务启动前运行的竞态）
+      try {
+        const status = await window.podcastai.service.status()
+        state.serviceManager.processRunning = status.running
+        state.serviceManager.processPid = status.pid
+      } catch {}
+      // 主进程通知服务已就绪（或超时失败），立即刷新状态
+      await checkServiceHealth()
+      if (state.serviceStatus !== 'offline') {
+        await fetchClones()
+      }
+      // 如果主进程说还没就绪，但进程在运行，启动轮询
+      if (!info.ready && state.serviceManager.processRunning && state.serviceStatus === 'offline') {
+        startServiceReadinessPolling()
+      }
+      render()
+    })
   }
+
+  // v1.0.5: 如果服务进程在运行但 HTTP 还未就绪，启动长时间轮询
+  // CosyVoice2 首次加载可能需要 60-120 秒（3.7GB 模型 + PyTorch 初始化）
+  if (state.serviceManager.processRunning && state.serviceStatus === 'offline') {
+    startServiceReadinessPolling()
+  }
+}
+
+// 全局轮询控制器，避免多个轮询同时运行
+let _readinessPollingActive = false
+function startServiceReadinessPolling() {
+  if (_readinessPollingActive) return
+  _readinessPollingActive = true
+
+  const poll = async (attempts) => {
+    // 最多轮询 90 次 × 2 秒 = 180 秒
+    if (attempts >= 90) {
+      _readinessPollingActive = false
+      render()
+      return
+    }
+    const ok = await checkServiceHealth()
+    if (ok) {
+      await fetchClones()
+      _readinessPollingActive = false
+      render()
+    } else {
+      // 每次轮询都触发 render，让 banner 显示实时状态
+      render()
+      setTimeout(() => poll(attempts + 1), 2000)
+    }
+  }
+  setTimeout(() => poll(0), 2000)
 }
 
 init()

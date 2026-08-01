@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, Suspense, useEffect } from 'react'
+import { useState, Suspense, useEffect, useCallback } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -24,10 +24,19 @@ import {
 } from 'lucide-react'
 import { useAuth } from '@/lib/auth-context'
 import { useLocale } from '@/components/locale-provider'
+// 复用 packages/auth 桌面端桥接能力
+import {
+  syncDesktopAuthAndOpen,
+  normalizeDesktopCallbackUrl,
+  type DesktopAuthPayload,
+} from '../../../packages/auth/desktop-bridge'
 
 const APP_NAME = 'PodcastAI'
 const APP_ICON_URL =
   'https://coze-coding-project.tos.coze.site/gen_project_icon/2026-06-07/7648490176158875686_1780806296.png?sign=4902870512-3079976b29-0-42ee12dce0d22bac106b67ff5047a40e957e7b5516dd3f75087939b60612f14a'
+
+// Deep-link scheme：与桌面端 electron/src/main.ts DESKTOP_SCHEME 保持一致
+const DESKTOP_SCHEME = 'podcastai'
 
 type TabValue = 'login' | 'signup' | 'desktop'
 type SignupStep = 'info' | 'verify'
@@ -76,7 +85,15 @@ function LoginPageContent() {
   const { locale } = useLocale()
   const t = (en: string, zh: string) => (locale === 'en' ? en : zh)
 
-  const { user, loading: authLoading, signIn, signUp, signInWithGoogle, signInWithDesktop, clearError } = useAuth()
+  const { user, accessToken, loading: authLoading, signIn, signUp, signInWithGoogle, signInWithDesktop, clearError } = useAuth()
+
+  // v1.0.31: 桌面端发起的登录流程
+  // 桌面端通过 shell.openExternal 打开: /login?mode=desktop&callbackUrl=http://127.0.0.1:port&scheme=podcastai
+  // 登录成功后需通过 packages/auth/desktop-bridge 把 token 推送回桌面端
+  const desktopCallbackUrl = searchParams.get('callbackUrl') || ''
+  const desktopScheme = searchParams.get('scheme') || DESKTOP_SCHEME
+  const isDesktopFlow = mode === 'desktop' && !!normalizeDesktopCallbackUrl(desktopCallbackUrl)
+  const safeCallbackUrl = isDesktopFlow ? normalizeDesktopCallbackUrl(desktopCallbackUrl)! : ''
 
   const initialTab: TabValue =
     mode === 'signup' ? 'signup' : mode === 'desktop' ? 'desktop' : 'login'
@@ -101,13 +118,77 @@ function LoginPageContent() {
 
   // Desktop state
   const [desktopLoading, setDesktopLoading] = useState(false)
+  // v1.0.31: 桌面端登录推送状态
+  const [desktopRedirecting, setDesktopRedirecting] = useState(false)
+
+  /**
+   * v1.0.31: 把 token 推送回桌面端
+   * 复用 packages/auth/desktop-bridge.syncDesktopAuthAndOpen:
+   *   1. POST payload 到桌面端本地回调服务器（http://127.0.0.1:port）
+   *   2. 通过 deep-link podcastai://login-success?token=... 回跳桌面端
+   */
+  const pushTokenToDesktop = useCallback(
+    async (payload: DesktopAuthPayload): Promise<boolean> => {
+      if (!isDesktopFlow) return false
+      setDesktopRedirecting(true)
+      try {
+        const result = await syncDesktopAuthAndOpen(payload, desktopScheme, safeCallbackUrl)
+        // localSync.ok 为 true 表示 POST 成功，桌面端已收到 token
+        // 即使 POST 失败，deep-link 也会触发回跳，桌面端仍能拿到 token
+        if (result.localSync.ok) {
+          setSuccess(
+            t(
+              'Authentication sent to desktop app. You can close this tab.',
+              '认证信息已发送到桌面客户端，可关闭此页面。'
+            )
+          )
+        } else {
+          setInfo(
+            t(
+              `Redirecting to desktop app... (local sync: ${result.localSync.error || 'fallback to deep link'})`,
+              `正在返回桌面客户端...（${result.localSync.error || '使用 deep-link 回跳'}）`
+            )
+          )
+        }
+        return true
+      } catch (err) {
+        setError(
+          t(
+            `Failed to return to desktop app: ${err instanceof Error ? err.message : String(err)}`,
+            `返回桌面客户端失败：${err instanceof Error ? err.message : String(err)}`
+          )
+        )
+        setDesktopRedirecting(false)
+        return false
+      }
+    },
+    [isDesktopFlow, desktopScheme, safeCallbackUrl, t]
+  )
 
   // Auto-redirect already-logged-in users to home
+  // v1.0.31: 桌面端流程下，已登录用户直接把 token 推送回桌面端，不跳转首页
   useEffect(() => {
-    if (user && !authLoading) {
-      router.replace('/')
+    if (!user || authLoading) return
+    if (isDesktopFlow && user) {
+      // 桌面端流程：直接推送 token
+      // 优先使用 auth context 中的 accessToken，回退到 localStorage（demo 模式）
+      const token =
+        accessToken ||
+        (typeof window !== 'undefined' && localStorage.getItem('podcastai_access_token')) ||
+        ''
+      if (token) {
+        const payload: DesktopAuthPayload = {
+          token,
+          email: user.email,
+          userId: user.id,
+          name: user.name,
+        }
+        pushTokenToDesktop(payload)
+      }
+      return
     }
-  }, [user, authLoading, router])
+    router.replace('/')
+  }, [user, accessToken, authLoading, router, isDesktopFlow, pushTokenToDesktop])
 
   // Countdown timer using setTimeout pattern (re-creates on each tick)
   useEffect(() => {
@@ -138,6 +219,18 @@ function LoginPageContent() {
       if (result.error) {
         setError(result.error)
         return
+      }
+      // v1.0.31: 桌面端流程，把 token 推送回桌面客户端
+      if (isDesktopFlow && result.token) {
+        const payload: DesktopAuthPayload = {
+          token: result.token,
+          refreshToken: result.refreshToken || null,
+          email: result.email || email,
+          userId: null,
+          name: null,
+        }
+        const pushed = await pushTokenToDesktop(payload)
+        if (pushed) return
       }
       setSuccess(t('Login successful!', '登录成功！'))
       router.push('/')
@@ -228,6 +321,18 @@ function LoginPageContent() {
         setError(result.error)
         return
       }
+      // v1.0.31: 桌面端流程，把 token 推送回桌面客户端
+      if (isDesktopFlow && result.token) {
+        const payload: DesktopAuthPayload = {
+          token: result.token,
+          refreshToken: result.refreshToken || null,
+          email: result.email || email,
+          userId: null,
+          name: name.trim() || null,
+        }
+        const pushed = await pushTokenToDesktop(payload)
+        if (pushed) return
+      }
       setSuccess(t('Account created successfully!', '账号创建成功！'))
       router.push('/')
     } catch (err) {
@@ -269,6 +374,17 @@ function LoginPageContent() {
     clearMessages()
     setIsLoading(true)
     try {
+      // v1.0.31: 桌面端流程下，先把回调参数存入 sessionStorage，
+      // /auth/callback 完成 Google 登录后会读取并推送 token 到桌面端
+      if (isDesktopFlow && typeof window !== 'undefined') {
+        sessionStorage.setItem(
+          'podcastai_desktop_flow',
+          JSON.stringify({
+            callbackUrl: safeCallbackUrl,
+            scheme: desktopScheme,
+          })
+        )
+      }
       const result = await signInWithGoogle()
       if (result.error) {
         setError(result.error)
@@ -333,12 +449,49 @@ function LoginPageContent() {
     )
   }
 
+  // v1.0.31: 桌面端流程中，正在把 token 推送回桌面端，显示全屏 loader
+  if (desktopRedirecting) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-4">
+        <div className="text-center space-y-6 max-w-md">
+          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 mx-auto">
+            <Monitor className="h-8 w-8 text-primary animate-pulse" />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-xl font-semibold flex items-center justify-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {t('Returning to Desktop App...', '正在返回桌面客户端...')}
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              {t(
+                'Authentication successful. You can close this browser tab.',
+                '认证成功，可关闭此浏览器标签页。'
+              )}
+            </p>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   const busy = isLoading || authLoading
 
   return (
     <div className="min-h-screen flex items-center justify-center px-4 py-12 bg-muted/30">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center space-y-4">
+          {/* v1.0.31: 桌面端流程提示横幅 */}
+          {isDesktopFlow && (
+            <Alert className="border-primary bg-primary/5 text-left">
+              <Monitor className="h-4 w-4 text-primary" />
+              <AlertDescription className="text-primary">
+                {t(
+                  'Login here to authenticate the PodcastAI desktop app. You will be redirected back automatically.',
+                  '在此登录以认证 PodcastAI 桌面客户端，登录后将自动返回桌面端。'
+                )}
+              </AlertDescription>
+            </Alert>
+          )}
           <div className="flex justify-center">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img

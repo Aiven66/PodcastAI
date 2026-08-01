@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' https: data: blob:; media-src 'self' https: blob: data:;">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' https: data: blob:; connect-src 'self' http://localhost:* http://127.0.0.1:* https: data: blob:; media-src 'self' http://localhost:* http://127.0.0.1:* https: blob: data:; font-src 'self' https://fonts.googleapis.cn https://fonts.gstatic.com.cn;">
   <title>PodcastAI</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -12,7 +12,16 @@
       theme: {
         extend: {
           colors: {
+            // 与 web 端 globals.css OKLCH 配色完全一致
+            background: 'oklch(0.99 0.008 190)',
+            foreground: 'oklch(0.18 0.04 195)',
+            card: 'oklch(1 0 0)',
+            'card-foreground': 'oklch(0.18 0.04 195)',
+            popover: 'oklch(1 0 0)',
+            'popover-foreground': 'oklch(0.18 0.04 195)',
             primary: {
+              DEFAULT: 'oklch(0.60 0.14 185)',
+              foreground: 'oklch(0.99 0.02 185)',
               50: '#f0fdfa',
               100: '#ccfbf1',
               200: '#99f6e4',
@@ -24,34 +33,87 @@
               800: '#115e59',
               900: '#134e4a',
             },
+            secondary: {
+              DEFAULT: 'oklch(0.94 0.03 190)',
+              foreground: 'oklch(0.35 0.10 190)',
+            },
+            muted: {
+              DEFAULT: 'oklch(0.95 0.015 195)',
+              foreground: 'oklch(0.50 0.05 195)',
+            },
+            accent: {
+              DEFAULT: 'oklch(0.91 0.04 190)',
+              foreground: 'oklch(0.25 0.12 185)',
+            },
+            destructive: {
+              DEFAULT: 'oklch(0.60 0.18 28)',
+              foreground: 'oklch(0.99 0.02 28)',
+            },
+            border: 'oklch(0.90 0.02 195)',
+            input: 'oklch(0.88 0.025 195)',
+            ring: 'oklch(0.60 0.14 185 / 35%)',
           },
           fontFamily: {
             sans: ['ui-sans-serif', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'sans-serif'],
-            serif: ['Noto Serif SC', 'Songti SC', 'STSong', 'SimSun', 'Georgia', 'serif'],
+            serif: ['"Noto Serif SC"', '"Songti SC"', '"STSong"', '"SimSun"', 'ui-serif', 'Georgia', 'Cambria', '"Times New Roman"', 'Times', 'serif'],
+            mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', '"Liberation Mono"', '"Courier New"', 'monospace'],
           },
           borderRadius: {
-            'xl': '0.8rem',
-            '2xl': '1.2rem',
-            '3xl': '1.6rem',
+            'DEFAULT': '0.8rem',
+            'sm': 'calc(0.8rem - 4px)',
+            'md': 'calc(0.8rem - 2px)',
+            'lg': '0.8rem',
+            'xl': 'calc(0.8rem + 4px)',
+            '2xl': 'calc(0.8rem + 8px)',
+            '3xl': 'calc(0.8rem + 12px)',
+            '4xl': 'calc(0.8rem + 16px)',
+          },
+          boxShadow: {
+            'xs': '0 1px 3px 0px hsl(0 0% 0% / 0.00)',
+            'sm': '0 1px 3px 0px hsl(0 0% 0% / 0.00), 0 1px 2px -1px hsl(0 0% 0% / 0.00)',
+            'md': '0 1px 3px 0px hsl(0 0% 0% / 0.00), 0 2px 4px -1px hsl(0 0% 0% / 0.00)',
+            'lg': '0 1px 3px 0px hsl(0 0% 0% / 0.00), 0 4px 6px -1px hsl(0 0% 0% / 0.00)',
           },
         },
       },
     }
   </script>
   <style>
-    @import url('https://fonts.googleapis.cn/css2?family=Noto+Serif+SC:wght@400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.cn/css2?family=Noto+Serif+SC:wght@200..900&display=swap');
+
+    :root {
+      --background: oklch(0.99 0.008 190);
+      --foreground: oklch(0.18 0.04 195);
+      --card: oklch(1 0 0);
+      --card-foreground: oklch(0.18 0.04 195);
+      --popover: oklch(1 0 0);
+      --popover-foreground: oklch(0.18 0.04 195);
+      --primary: oklch(0.60 0.14 185);
+      --primary-foreground: oklch(0.99 0.02 185);
+      --secondary: oklch(0.94 0.03 190);
+      --secondary-foreground: oklch(0.35 0.10 190);
+      --muted: oklch(0.95 0.015 195);
+      --muted-foreground: oklch(0.50 0.05 195);
+      --accent: oklch(0.91 0.04 190);
+      --accent-foreground: oklch(0.25 0.12 185);
+      --destructive: oklch(0.60 0.18 28);
+      --border: oklch(0.90 0.02 195);
+      --input: oklch(0.88 0.025 195);
+      --ring: oklch(0.60 0.14 185 / 35%);
+      --radius: 0.8rem;
+    }
 
     * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
     body {
-      background: #fafaf9;
-      color: #1c1917;
-      font-family: 'Noto Serif SC', 'Songti SC', 'STSong', 'SimSun', Georgia, serif;
+      background: var(--background);
+      color: var(--foreground);
+      font-family: var(--font-serif, 'Noto Serif SC', 'Songti SC', Georgia, serif);
       overflow: hidden;
     }
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: #d6d3d1; border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: #a8a29e; }
+    ::-webkit-scrollbar-thumb { background: oklch(0.85 0.02 195); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: oklch(0.70 0.05 195); }
     .app-drag { -webkit-app-region: drag; }
     .app-no-drag { -webkit-app-region: no-drag; }
     .toast-enter { animation: toastIn 0.3s ease-out; }
@@ -61,10 +123,13 @@
     .wave { display: inline-block; width: 3px; height: 14px; margin: 0 1px; background: currentColor; border-radius: 2px; animation: wave 1.2s ease-in-out infinite; }
     @keyframes wave { 0%, 100% { height: 6px; } 50% { height: 16px; } }
     .gradient-text {
-      background: linear-gradient(to right, #0d9488, #7c3aed);
+      background: linear-gradient(to right, oklch(0.60 0.14 185), oklch(0.55 0.22 295));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
+    }
+    .gradient-primary {
+      background: linear-gradient(to right, oklch(0.60 0.14 185), oklch(0.55 0.22 295));
     }
     .glow {
       position: absolute;
@@ -73,9 +138,182 @@
       opacity: 0.3;
       pointer-events: none;
     }
+    .glow-primary { background: oklch(0.60 0.14 185 / 0.15); }
+    .glow-purple { background: oklch(0.55 0.22 295 / 0.12); }
+
+    /* v1.0.31: 登录覆盖层样式 */
+    #auth-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, oklch(0.99 0.008 190) 0%, oklch(0.95 0.02 195) 100%);
+      backdrop-filter: blur(20px);
+    }
+    #auth-overlay.hidden { display: none; }
+    .auth-card {
+      max-width: 420px;
+      width: calc(100% - 32px);
+      background: var(--card);
+      border-radius: 1.2rem;
+      box-shadow: 0 10px 40px -10px oklch(0.18 0.04 195 / 0.15), 0 4px 12px -4px oklch(0.18 0.04 195 / 0.08);
+      padding: 40px 32px;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+    .auth-card::before {
+      content: '';
+      position: absolute;
+      top: -50%;
+      left: -20%;
+      width: 140%;
+      height: 200px;
+      background: radial-gradient(ellipse, oklch(0.60 0.14 185 / 0.12) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .auth-logo {
+      width: 64px;
+      height: 64px;
+      margin: 0 auto 20px;
+      border-radius: 16px;
+      background: linear-gradient(135deg, oklch(0.60 0.14 185), oklch(0.55 0.22 295));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 8px 24px -8px oklch(0.60 0.14 185 / 0.4);
+    }
+    .auth-logo svg { width: 36px; height: 36px; color: white; }
+    .auth-title {
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--foreground);
+      margin-bottom: 8px;
+      letter-spacing: -0.02em;
+    }
+    .auth-subtitle {
+      font-size: 14px;
+      color: var(--muted-foreground);
+      margin-bottom: 28px;
+      line-height: 1.5;
+    }
+    .auth-btn {
+      width: 100%;
+      height: 48px;
+      border-radius: 12px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .auth-btn-primary {
+      background: linear-gradient(135deg, oklch(0.60 0.14 185), oklch(0.55 0.16 220));
+      color: white;
+    }
+    .auth-btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px -6px oklch(0.60 0.14 185 / 0.5);
+    }
+    .auth-btn-primary:active { transform: translateY(0); }
+    .auth-btn-primary:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .auth-user {
+      margin-top: 20px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      font-size: 13px;
+      color: var(--muted-foreground);
+    }
+    .auth-user-email {
+      color: var(--foreground);
+      font-weight: 500;
+    }
+    .auth-status {
+      margin-top: 16px;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.5;
+      text-align: left;
+      display: none;
+    }
+    .auth-status.visible { display: block; }
+    .auth-status.info {
+      background: oklch(0.95 0.02 195);
+      color: var(--muted-foreground);
+    }
+    .auth-status.success {
+      background: oklch(0.95 0.04 150);
+      color: oklch(0.40 0.12 150);
+    }
+    .auth-status.error {
+      background: oklch(0.95 0.04 25);
+      color: oklch(0.50 0.18 25);
+    }
+    .auth-spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid currentColor;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      display: inline-block;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .auth-link {
+      display: inline-block;
+      margin-top: 14px;
+      font-size: 13px;
+      color: var(--muted-foreground);
+      cursor: pointer;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+    .auth-link:hover { color: var(--foreground); }
   </style>
 </head>
 <body>
+  <!-- v1.0.31: 登录覆盖层（无 token 时显示，阻止访问主应用） -->
+  <div id="auth-overlay">
+    <div class="auth-card">
+      <div class="auth-logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"/>
+        </svg>
+      </div>
+      <div class="auth-title">PodcastAI</div>
+      <div class="auth-subtitle" id="auth-subtitle">登录后开始创建精彩播客</div>
+
+      <button id="auth-login-btn" class="auth-btn auth-btn-primary">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="2" y1="12" x2="22" y2="12"/>
+          <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+        </svg>
+        <span id="auth-login-btn-text">打开网页登录</span>
+      </button>
+
+      <div id="auth-status" class="auth-status"></div>
+
+      <div id="auth-user-info" class="auth-user" style="display:none;">
+        <div>当前账号：<span id="auth-user-email" class="auth-user-email"></span></div>
+        <button id="auth-signout-btn" class="auth-link" style="background:none;border:none;">退出登录</button>
+      </div>
+    </div>
+  </div>
+
   <div id="app" class="flex h-screen"></div>
 
   <!-- Toast container -->
@@ -105,6 +343,14 @@
         progress: { current: 0, total: 0, stage: '' },
         scriptText: '',
         audioUrl: null,
+        // v1.0.31: 认证状态
+        auth: {
+          isAuthenticated: false,
+          token: null,
+          email: null,
+          name: null,
+          userId: null,
+        },
       },
     }
   </script>

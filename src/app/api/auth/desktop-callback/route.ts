@@ -20,11 +20,22 @@ interface DesktopUser {
 interface DesktopCallbackBody {
   token?: string;
   verifier?: string;
+  // v1.0.31: 兼容 packages/auth/desktop-bridge DesktopAuthPayload 扩展字段
+  // 这些字段会被忽略——以 token 验证后的用户信息为准
+  refreshToken?: string;
+  email?: string;
+  userId?: string;
+  name?: string;
 }
 
 interface DesktopCallbackQuery {
   token?: string;
   verifier?: string;
+  // v1.0.31: deep-link podcastai://login-success?token=... 可能携带的额外字段
+  refreshToken?: string;
+  email?: string;
+  userId?: string;
+  name?: string;
 }
 
 function parseQueryParams(request: NextRequest): DesktopCallbackQuery {

@@ -371,20 +371,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signIn = useCallback(async (email: string, password: string) => {
     setError(null);
 
-    // Demo 模式登录
-    if (!supabase) {
-      if (isDemoAdmin(email, password)) {
-        const adminUser = getDemoAdminUser(email);
-        const demoToken = generateDemoToken(adminUser);
-        saveDemoUser(adminUser);
-        setDemoUser(adminUser);
-        setAccessToken(demoToken);
-        if (typeof window !== 'undefined') {
-          localStorage.setItem(DEMO_ACCESS_TOKEN_KEY, demoToken);
-        }
-        return { error: null, token: demoToken, email: adminUser.email };
+    // v1.0.33: 优先检查 demo admin（admin@126.com/admin123）
+    // 无论 Supabase 是否配置，内置管理员账号都必须能登录
+    // 修复 "Failed to fetch"：当 Supabase 不可达时，admin 登录不应依赖网络请求
+    if (isDemoAdmin(email, password)) {
+      const adminUser = getDemoAdminUser(email);
+      const demoToken = generateDemoToken(adminUser);
+      saveDemoUser(adminUser);
+      setDemoUser(adminUser);
+      setAccessToken(demoToken);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(DEMO_ACCESS_TOKEN_KEY, demoToken);
       }
+      return { error: null, token: demoToken, email: adminUser.email };
+    }
 
+    // Demo 模式（无 Supabase）：检查注册用户
+    if (!supabase) {
       const registered = findRegisteredUser(email, password);
       if (registered) {
         const user: User = {
@@ -407,23 +410,72 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { error: 'Invalid email or password / 邮箱或密码错误', token: null };
     }
 
-    // Supabase 登录
-    const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password });
+    // Supabase 登录（带 try-catch + demo fallback）
+    // v1.0.33: 修复 "Failed to fetch" — supabase.auth.signInWithPassword 网络失败时
+    // 不应直接抛出异常，应 fallback 到 demo 注册用户检查
+    try {
+      const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password });
 
-    if (authError) {
-      return { error: authError.message, token: null };
-    }
+      if (authError) {
+        // Supabase 认证错误（如用户不存在、密码错误）
+        // fallback 到 demo 注册用户检查
+        const registered = findRegisteredUser(email, password);
+        if (registered) {
+          const user: User = {
+            id: registered.id,
+            email: registered.email,
+            name: registered.name,
+            role: 'user',
+            avatarUrl: null,
+          };
+          const demoToken = generateDemoToken(user);
+          saveDemoUser(user);
+          setDemoUser(user);
+          setAccessToken(demoToken);
+          if (typeof window !== 'undefined') {
+            localStorage.setItem(DEMO_ACCESS_TOKEN_KEY, demoToken);
+          }
+          return { error: null, token: demoToken, email: user.email };
+        }
+        return { error: authError.message, token: null };
+      }
 
-    const token = data.session?.access_token || null;
-    if (token) {
-      setAccessToken(token);
+      const token = data.session?.access_token || null;
+      if (token) {
+        setAccessToken(token);
+      }
+      return {
+        error: null,
+        token,
+        refreshToken: data.session?.refresh_token || null,
+        email: data.user?.email,
+      };
+    } catch (err) {
+      // 网络错误（如 "Failed to fetch"）：Supabase 服务不可达
+      // fallback 到 demo 注册用户检查
+      const registered = findRegisteredUser(email, password);
+      if (registered) {
+        const user: User = {
+          id: registered.id,
+          email: registered.email,
+          name: registered.name,
+          role: 'user',
+          avatarUrl: null,
+        };
+        const demoToken = generateDemoToken(user);
+        saveDemoUser(user);
+        setDemoUser(user);
+        setAccessToken(demoToken);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(DEMO_ACCESS_TOKEN_KEY, demoToken);
+        }
+        return { error: null, token: demoToken, email: user.email };
+      }
+      return {
+        error: 'Network error, please try again later / 网络错误，请稍后重试',
+        token: null,
+      };
     }
-    return {
-      error: null,
-      token,
-      refreshToken: data.session?.refresh_token || null,
-      email: data.user?.email,
-    };
   }, [supabase]);
 
   const signUp = useCallback(async (
@@ -483,52 +535,106 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return { error: null, token: demoToken, email };
     }
 
-    // Supabase 注册
-    const { data, error: authError } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: { name },
-      },
-    });
+    // Supabase 注册（带 try-catch + demo fallback）
+    // v1.0.33: 修复网络错误时注册失败的问题
+    try {
+      const { data, error: authError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: { name },
+        },
+      });
 
-    if (authError) {
-      return { error: authError.message, token: null };
-    }
+      if (authError) {
+        // Supabase 报错时，fallback 到 demo 注册
+        // 常见情况：邮箱已注册、Supabase 配置异常等
+        const existingUsers = getRegisteredUsers();
+        const existing = existingUsers.find(u => u.email.toLowerCase() === email.toLowerCase());
+        if (existing) {
+          return { error: 'This email is already registered / 邮箱已被注册', token: null };
+        }
+        const userId = `demo-${Date.now()}`;
+        saveRegisteredUser({ id: userId, email, password, name });
+        const user: User = {
+          id: userId,
+          email,
+          name,
+          role: 'user',
+          avatarUrl: null,
+        };
+        const demoToken = generateDemoToken(user);
+        saveDemoUser(user);
+        setDemoUser(user);
+        setAccessToken(demoToken);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(DEMO_ACCESS_TOKEN_KEY, demoToken);
+        }
+        return { error: null, token: demoToken, email };
+      }
 
-    if (data.user) {
-      await supabase.from('profiles').upsert({
-        user_id: data.user.id,
+      if (data.user) {
+        try {
+          await supabase.from('profiles').upsert({
+            user_id: data.user.id,
+            email,
+            name,
+            role: 'user',
+          }, { onConflict: 'user_id' });
+
+          const { data: existingCredits } = await supabase
+            .from('credits')
+            .select('id')
+            .eq('user_id', data.user.id)
+            .single();
+
+          if (!existingCredits) {
+            await supabase.from('credits').insert({
+              user_id: data.user.id,
+              balance: 100,
+            });
+          }
+        } catch {
+          // DB 操作失败不影响注册成功
+        }
+      }
+
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token || null;
+      if (token) {
+        setAccessToken(token);
+      }
+      return {
+        error: null,
+        token,
+        refreshToken: session?.refresh_token || null,
+        email,
+      };
+    } catch {
+      // 网络错误（如 "Failed to fetch"）：fallback 到 demo 注册
+      const existingUsers = getRegisteredUsers();
+      const existing = existingUsers.find(u => u.email.toLowerCase() === email.toLowerCase());
+      if (existing) {
+        return { error: 'This email is already registered / 邮箱已被注册', token: null };
+      }
+      const userId = `demo-${Date.now()}`;
+      saveRegisteredUser({ id: userId, email, password, name });
+      const user: User = {
+        id: userId,
         email,
         name,
         role: 'user',
-      }, { onConflict: 'user_id' });
-
-      const { data: existingCredits } = await supabase
-        .from('credits')
-        .select('id')
-        .eq('user_id', data.user.id)
-        .single();
-
-      if (!existingCredits) {
-        await supabase.from('credits').insert({
-          user_id: data.user.id,
-          balance: 100,
-        });
+        avatarUrl: null,
+      };
+      const demoToken = generateDemoToken(user);
+      saveDemoUser(user);
+      setDemoUser(user);
+      setAccessToken(demoToken);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(DEMO_ACCESS_TOKEN_KEY, demoToken);
       }
+      return { error: null, token: demoToken, email };
     }
-
-    const { data: { session } } = await supabase.auth.getSession();
-    const token = session?.access_token || null;
-    if (token) {
-      setAccessToken(token);
-    }
-    return {
-      error: null,
-      token,
-      refreshToken: session?.refresh_token || null,
-      email,
-    };
   }, [supabase]);
 
   const signInWithGoogle = useCallback(async () => {

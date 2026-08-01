@@ -73,23 +73,25 @@ echo "Installing dependencies..."
 $PYTHON_EXE -m pip install --upgrade pip --no-warn-script-location
 
 # 核心依赖（精简版，不含 IndexTTS2、F5-TTS、GPT-SoVITS）
+# 注意：所有版本必须锁定，避免 python-build-standalone 环境因 pip 卸载失败导致版本错乱
 $PYTHON_EXE -m pip install --no-warn-script-location \
   fastapi==0.115.0 \
   "uvicorn[standard]==0.30.6" \
   python-multipart==0.0.9 \
   pydantic==2.9.0 \
   httpx==0.27.2 \
-  "numpy>=1.24.0" \
+  "numpy==1.26.4" \
   soundfile==0.12.1 \
   "edge-tts>=6.1.0" \
-  scipy \
-  librosa \
+  "scipy==1.11.4" \
+  "librosa==0.10.2.post1" \
+  "joblib==1.3.2" \
   openai-whisper \
-  onnxruntime \
-  torch \
-  torchaudio
+  "onnxruntime==1.18.1" \
+  "torch==2.3.1" \
+  "torchaudio==2.3.1"
 
-# CosyVoice2 依赖（v1.0.4 新增，确保声音克隆开箱即用）
+# CosyVoice2 依赖（v1.0.5 修复：锁定 torch 2.3.1 兼容的所有版本）
 echo ""
 echo "Installing CosyVoice2 dependencies..."
 $PYTHON_EXE -m pip install --no-warn-script-location \
@@ -105,13 +107,14 @@ $PYTHON_EXE -m pip install --no-warn-script-location \
   wetext==0.1.7 \
   pyworld==0.3.4 \
   gdown==5.1.0 \
-  transformers==4.44.0 \
+  "transformers==4.44.0" \
   lightning==2.2.4 \
   matplotlib==3.7.5 \
-  networkx==3.1 \
+  "networkx==3.1" \
   onnx==1.16.0 \
-  pyarrow==15.0.2 \
+  "pyarrow==15.0.2" \
   rich==13.7.1 \
+  "jaraco.text>=4.3.0" \
   protobuf==4.25.3 \
   grpcio==1.57.0 \
   grpcio-tools==1.57.0 \
