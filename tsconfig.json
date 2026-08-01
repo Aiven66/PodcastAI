@@ -31,5 +31,5 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "dist", "voice-service", "electron"]
+  "exclude": ["node_modules", "dist", "voice-service", "electron", "packages"]
 }
