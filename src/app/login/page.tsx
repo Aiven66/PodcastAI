@@ -120,6 +120,9 @@ function LoginPageContent() {
   const [desktopLoading, setDesktopLoading] = useState(false)
   // v1.0.31: 桌面端登录推送状态
   const [desktopRedirecting, setDesktopRedirecting] = useState(false)
+  // v1.0.34: 保存 deep-link 和推送结果，供手动回跳按钮使用
+  const [desktopDeepLink, setDesktopDeepLink] = useState<string>('')
+  const [desktopSyncResult, setDesktopSyncResult] = useState<{ ok: boolean; error?: string } | null>(null)
 
   /**
    * v1.0.31: 把 token 推送回桌面端
@@ -133,8 +136,11 @@ function LoginPageContent() {
       setDesktopRedirecting(true)
       try {
         const result = await syncDesktopAuthAndOpen(payload, desktopScheme, safeCallbackUrl)
+        // v1.0.34: 保存 deep-link 和同步结果，供手动回跳按钮使用
+        // 浏览器可能阻止无用户交互的自动 deep-link 跳转，需要提供手动按钮
+        setDesktopDeepLink(result.deepLink)
+        setDesktopSyncResult({ ok: result.localSync.ok, error: result.localSync.error })
         // localSync.ok 为 true 表示 POST 成功，桌面端已收到 token
-        // 即使 POST 失败，deep-link 也会触发回跳，桌面端仍能拿到 token
         if (result.localSync.ok) {
           setSuccess(
             t(
@@ -145,8 +151,8 @@ function LoginPageContent() {
         } else {
           setInfo(
             t(
-              `Redirecting to desktop app... (local sync: ${result.localSync.error || 'fallback to deep link'})`,
-              `正在返回桌面客户端...（${result.localSync.error || '使用 deep-link 回跳'}）`
+              `Click the button below to return to the desktop app. (sync: ${result.localSync.error || 'use deep link'})`,
+              `点击下方按钮返回桌面客户端。（${result.localSync.error || '使用 deep-link 回跳'}）`
             )
           )
         }
@@ -164,6 +170,24 @@ function LoginPageContent() {
     },
     [isDesktopFlow, desktopScheme, safeCallbackUrl, t]
   )
+
+  /**
+   * v1.0.34: 手动触发 deep-link 回跳桌面客户端
+   * 用户点击按钮触发（有用户交互），浏览器不会阻止 scheme 跳转
+   */
+  const handleManualReturnToDesktop = useCallback(() => {
+    if (!desktopDeepLink) return
+    try {
+      window.location.href = desktopDeepLink
+    } catch (err) {
+      setError(
+        t(
+          `Failed to open desktop app: ${err instanceof Error ? err.message : String(err)}`,
+          `打开桌面客户端失败：${err instanceof Error ? err.message : String(err)}`
+        )
+      )
+    }
+  }, [desktopDeepLink, t])
 
   // Auto-redirect already-logged-in users to home
   // v1.0.31: 桌面端流程下，已登录用户直接把 token 推送回桌面端，不跳转首页
@@ -450,22 +474,58 @@ function LoginPageContent() {
   }
 
   // v1.0.31: 桌面端流程中，正在把 token 推送回桌面端，显示全屏 loader
+  // v1.0.34: 添加手动"返回桌面客户端"按钮，浏览器可能阻止自动 deep-link 跳转
   if (desktopRedirecting) {
     return (
       <div className="min-h-screen flex items-center justify-center px-4">
-        <div className="text-center space-y-6 max-w-md">
-          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 mx-auto">
-            <Monitor className="h-8 w-8 text-primary animate-pulse" />
+        <div className="text-center space-y-6 max-w-md w-full">
+          <div className="flex h-16 w-16 items-center justify-center rounded-full bg-green-100 dark:bg-green-900/30 mx-auto">
+            <CheckCircle2 className="h-8 w-8 text-green-600 dark:text-green-400" />
           </div>
           <div className="space-y-2">
-            <h2 className="text-xl font-semibold flex items-center justify-center gap-2">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              {t('Returning to Desktop App...', '正在返回桌面客户端...')}
+            <h2 className="text-xl font-semibold">
+              {t('Login Successful!', '登录成功！')}
             </h2>
             <p className="text-sm text-muted-foreground">
               {t(
-                'Authentication successful. You can close this browser tab.',
-                '认证成功，可关闭此浏览器标签页。'
+                'Authentication successful. Click the button below to return to the desktop app.',
+                '认证成功，点击下方按钮返回桌面客户端。'
+              )}
+            </p>
+            {desktopSyncResult && !desktopSyncResult.ok && desktopSyncResult.error && (
+              <p className="text-xs text-muted-foreground">
+                {t(
+                  `Local sync: ${desktopSyncResult.error}`,
+                  `本地同步：${desktopSyncResult.error}`
+                )}
+              </p>
+            )}
+          </div>
+          {/* v1.0.34: 手动返回桌面客户端按钮 */}
+          {desktopDeepLink && (
+            <Button
+              type="button"
+              size="lg"
+              className="w-full h-12 text-base"
+              onClick={handleManualReturnToDesktop}
+            >
+              <Monitor className="h-5 w-5 mr-2" />
+              {t('Return to Desktop App', '返回桌面客户端')}
+            </Button>
+          )}
+          {/* 未收到 deepLink 时显示 loading */}
+          {!desktopDeepLink && (
+            <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {t('Preparing...', '准备中...')}
+            </div>
+          )}
+          {/* 备用链接 */}
+          <div className="pt-2">
+            <p className="text-xs text-muted-foreground">
+              {t(
+                "If the button doesn't work, make sure the PodcastAI desktop app is running.",
+                '如果按钮无效，请确保 PodcastAI 桌面客户端正在运行。'
               )}
             </p>
           </div>

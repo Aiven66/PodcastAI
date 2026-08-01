@@ -1,5 +1,5 @@
 /**
- * PodcastAI Desktop - Electron Main Process v1.0.32
+ * PodcastAI Desktop - Electron Main Process v1.0.34
  *
  * 内置 Python 运行时 + voice-service + CosyVoice2 模型，开箱即用
  * - 自动启动内置 voice-service（无需用户安装 Python）
@@ -14,6 +14,9 @@
  *            - 平滑增益包络 + tanh 软限幅，消除"呲呲呲"调制噪声
  *            - 英文/混合文本改用 inference_cross_lingual，提升英文发音自然度
  *            - ref_text 按句子边界截断 + 口头禅清理，消除"可不"复读
+ * - v1.0.34: 修复桌面端登录回跳问题
+ *            - POST 回调收到 token 时也把窗口带到前台（之前只 deep-link 才会）
+ *            - Web 端登录成功页添加"返回桌面客户端"手动按钮（浏览器可能阻止自动 deep-link）
  */
 
 import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } from 'electron'
@@ -818,6 +821,11 @@ function startCallbackServer(): Promise<boolean> {
                 name: payload.name,
                 userId: payload.userId,
               })
+              // v1.0.34: POST 回调也需要把窗口带到前台
+              // 否则用户看不到登录成功，桌面端仍然显示"等待网页登录"
+              if (mainWindow.isMinimized()) mainWindow.restore()
+              mainWindow.show()
+              mainWindow.focus()
             }
             res.writeHead(200, { 'Content-Type': 'application/json' })
             res.end(JSON.stringify({ ok: true }))
