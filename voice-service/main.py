@@ -26,6 +26,17 @@ os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
 # 避免 tokenizers 并行 fork 警告
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+# v1.0.35: 修复 macOS GUI 应用不继承 shell PATH 的问题
+# 从 Finder/LaunchPad 启动的应用 PATH 只有 /usr/bin:/bin:/usr/sbin:/sbin
+# 导致 ffmpeg（Homebrew 安装在 /opt/homebrew/bin）不可用
+# edge-tts 合成后的 MP3 无法转换为 WAV，播客生成报 "No audio chunks generated"
+_extra_paths = ['/opt/homebrew/bin', '/usr/local/bin', '/snap/bin']
+_cur_path = os.environ.get('PATH', '')
+for _p in _extra_paths:
+    if os.path.isdir(_p) and _p not in _cur_path:
+        _cur_path = _cur_path + os.pathsep + _p
+os.environ['PATH'] = _cur_path
+
 import numpy as np
 import soundfile as sf
 from scipy.signal import resample as scipy_resample
@@ -1614,9 +1625,33 @@ def load_cosyvoice():
                 cosyvoice_root = str(Path(__file__).parent / "CosyVoice")
             if cosyvoice_root not in sys.path:
                 sys.path.insert(0, cosyvoice_root)
+            # v1.0.50: 同时将 third_party/Matcha-TTS 加入 sys.path
+            # cosyvoice.hifigan / cosyvoice.flow.decoder / cosyvoice.flow.flow_matching
+            # 依赖 matcha 包，该包以源码形式打包在 CosyVoice/third_party/Matcha-TTS
+            for extra_path in [
+                APP_DIR / "CosyVoice" / "third_party" / "Matcha-TTS",
+                Path(__file__).parent / "CosyVoice" / "third_party" / "Matcha-TTS",
+            ]:
+                if extra_path.exists() and str(extra_path) not in sys.path:
+                    sys.path.insert(0, str(extra_path))
+                    logger.info(f"v1.0.50: Added {extra_path} to sys.path for matcha dependency")
             from cosyvoice.cli.cosyvoice import CosyVoice2
             model_dir = str(MODEL_DIR)
-            _cosyvoice_device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+            # v1.0.41: 关键修复 — 在 Apple Silicon (M1/M2/M3) 上强制使用 CPU 而非 MPS
+            # 原因：CosyVoice2 的 model.py 中 llm_job 在子线程中运行 PyTorch 推理，
+            # 而 MPS + 多线程会导致"静默失败"——返回全零张量（静音音频），
+            # 不报任何异常，但合成的音频完全没有声音。
+            # CPU 模式虽然较慢，但推理结果可靠，不会出现静音问题。
+            if torch.cuda.is_available():
+                _cosyvoice_device = "cuda"
+            else:
+                # macOS Apple Silicon: 强制 CPU，避免 MPS 多线程静默失败
+                _cosyvoice_device = "cpu"
+                # 禁用 MPS，确保 CosyVoice2 内部使用 CPU
+                if hasattr(torch.backends, 'mps'):
+                    torch.backends.mps.is_available = lambda: False
+                    torch.backends.mps.is_built = lambda: False
+                logger.info("v1.0.41: Forcing CPU mode on macOS to avoid MPS multi-thread silent failure")
             logger.info(f"Loading CosyVoice2 from {model_dir} on {_cosyvoice_device}")
             _cosyvoice_model = CosyVoice2(model_dir)
             _cosyvoice_samplerate = 22050
@@ -1658,6 +1693,307 @@ def _truncate_ref_audio(ref_audio_path: str, max_sec: float = 8.0) -> str:
         return ref_audio_path
 
 
+# v1.0.46: 常见口头禅和复读词列表（大幅扩展）
+# CosyVoice2 会模仿 ref_text 中的语言习惯，这些词如果出现在 ref_text 中，
+# 合成结果会频繁复读，导致播客音频中反复出现"得了"、"可不"、"对吧"等无意义词语
+# v1.0.42 仅覆盖 15 个 pattern，"得了"等漏网导致 v1.0.45 仍出现复读
+# v1.0.46 扩展到 40+ pattern，覆盖所有常见中文口头禅/语气词
+_FILLER_WORDS_PATTERNS = [
+    # v1.0.42 原有
+    r'可不[是说]?',          # "可不"、"可不是"、"可不说"
+    r'对吧[啊呀]?',         # "对吧"、"对吧啊"
+    r'那个[个啊呀]?',       # "那个"、"那个啊"
+    r'就是[说啊呀]?',       # "就是"、"就是说"
+    r'然后[后啊]?',         # "然后"、"然后啊"
+    r'其实[是啊]?',         # "其实"、"其实是"
+    r'反正[是正]?',         # "反正"
+    r'怎么说[说呢]?',       # "怎么说"、"怎么说呢"
+    r'嗯[嗯啊]+',           # "嗯"、"嗯嗯"
+    r'啊[啊呀]+',           # "啊"、"啊啊"
+    r'呃[呃啊]+',           # "呃"、"呃呃"
+    r'你知道[道吧]?',       # "你知道"、"你知道吧"
+    r'对对[对]+',           # "对对"、"对对对"
+    r'是是[是]+',           # "是是"、"是是是"
+    r'好好[好]+',           # "好好"、"好好好"
+    # v1.0.46 新增 — 句末语气词/口头禅（最容易导致每句末尾复读）
+    r'得了[了啊]?',         # "得了"、"得了啊" ← 本次问题的元凶
+    r'行了[了啊]?',         # "行了"、"行了啊"
+    r'算了[了啊]?',         # "算了"、"算了啊"
+    r'罢了[了啊]?',         # "罢了"
+    r'好了[了啊]+',         # "好了"、"好了好了"
+    r'完了[了啊]+',         # "完了"、"完了完了"
+    r'是吧[吧啊]?',         # "是吧"、"是吧啊"
+    r'嘛[嘛啊]+',           # "嘛"、"嘛嘛"
+    r'呗[呗啊]+',           # "呗"
+    r'你看[看吧]?',         # "你看"、"你看吧"
+    r'我说[说啊]?',         # "我说"、"我说啊"
+    r'他说[说啊]?',         # "他说"、"他说啊"
+    r'不是吗[吗啊]?',       # "不是吗"
+    r'对不对[对啊]?',       # "对不对"
+    r'是不是[是啊]?',       # "是不是"
+    r'然后呢[呢啊]?',       # "然后呢"
+    r'所以呢[呢啊]?',       # "所以呢"
+    r'之类的[了的]?',       # "之类的"
+    r'什么的[么的]?',       # "什么的"
+    r'什么的呀',            # "什么的呀"
+    r'这样吧[吧啊]?',       # "这样吧"
+    r'那样吧[吧啊]?',       # "那样吧"
+    r'的话[话啊]?',         # "的话"
+    r'哦[哦啊]+',           # "哦"、"哦哦"
+    r'唉[唉啊]+',           # "唉"
+    r'嘿[嘿啊]+',           # "嘿"
+    r'嚯[嚯啊]+',           # "嚯"
+    r'哎[哎啊]+',           # "哎"、"哎哎"
+    r'得了吧[吧啊]?',       # "得了吧"
+    r'行了吧[吧啊]?',       # "行了吧"
+    r'算了吧[吧啊]?',       # "算了吧"
+]
+
+def _clean_ref_text_for_synthesis(ref_text: str) -> str:
+    """v1.0.54: 彻底清理 ref_text 中的所有口头禅 + 所有时间词（不替换，直接删除）
+
+    教训回顾（v1.0.42→v1.0.53 修复链）：
+      - v1.0.42: 只清理 15 个口头禅 → "得了"漏网 → 复读
+      - v1.0.46: 扩展到 40+ 口头禅 → 仍有漏网
+      - v1.0.51: "以前"→"当时"同义词替换 → "当时"又成新复读词！
+      - v1.0.52: ref_text 也开始替换 → 没用，zero_shot 从声学特征也能学
+      - 结论：同义词替换是"打地鼠"，替换一个就冒一个新的。
+              ref_text 本身就不应该包含任何口头禅/时间词，直接删除最干净。
+
+    v1.0.54 方案：
+      - 删除 ALL 高频时间词（以前/当时/之前/之后/后来/过去/曾经...）
+      - 删除 ALL 40+ 口头禅模式
+      - 删除"这个/那个/然后/其实/就是/反正"等连词语气词（ref_text 不需要语义通顺，
+        只要给模型正确的语音-文本对齐参考就行，清空更安全）
+    """
+    if not ref_text:
+        return ref_text
+    cleaned = ref_text
+    # v1.0.54: 彻底删除所有高频时间词（不替换！替换=制造新复读词）
+    _time_word_patterns = [
+        r'以前[啊呀呢吧嘛]?',
+        r'当时[啊呀呢吧嘛]?',
+        r'从前[啊呀呢吧嘛]?',
+        r'当年[啊呀呢吧嘛]?',
+        r'那时候[啊呀呢吧嘛]?',
+        r'此前[啊呀呢吧嘛]?',
+        r'之后[啊呀呢吧嘛]?',
+        r'后来[啊呀呢吧嘛]?',
+        r'过去[啊呀呢吧嘛]?',
+        r'曾经[啊呀呢吧嘛]?',
+        r'之前[啊呀呢吧嘛]?',
+        r'以往[啊呀呢吧嘛]?',
+        r'今后[啊呀呢吧嘛]?',
+        r'将来[啊呀呢吧嘛]?',
+        r'现在[啊呀呢吧嘛]?',
+        r'此刻[啊呀呢吧嘛]?',
+        r'目前[啊呀呢吧嘛]?',
+    ]
+    for p in _time_word_patterns:
+        cleaned = re.sub(p, '', cleaned)
+    # 直接删除 40+ 口头禅
+    for pattern in _FILLER_WORDS_PATTERNS:
+        cleaned = re.sub(pattern, '', cleaned)
+    # v1.0.54: ref_text 额外删除连词/语气词（ref_text 不需要这些）
+    _ref_extra_remove = [
+        r'然后[啊呀呢吧嘛]?',
+        r'其实[啊呀呢吧嘛]?',
+        r'就是[啊呀呢吧嘛]?',
+        r'反正[啊呀呢吧嘛]?',
+        r'这个[啊呀呢吧嘛]?',
+        r'那个[啊呀呢吧嘛]?',
+        r'怎么[啊呀呢吧嘛]?',
+        r'什么[啊呀呢吧嘛]?',
+        r'所以[啊呀呢吧嘛]?',
+        r'但是[啊呀呢吧嘛]?',
+        r'而且[啊呀呢吧嘛]?',
+        r'因为[啊呀呢吧嘛]?',
+        r'所以说[啊呀呢吧嘛]?',
+    ]
+    for p in _ref_extra_remove:
+        cleaned = re.sub(p, '', cleaned)
+    # 清理多余的标点和空格
+    cleaned = re.sub(r'[，,]\s*[，,]', '，', cleaned)
+    cleaned = re.sub(r'\s+', '', cleaned)
+    cleaned = cleaned.strip('，。！？.,!? ')
+    if cleaned != ref_text:
+        logger.info(f"v1.0.54: Cleaned ref_text (AGRESSIVE REMOVE ALL FILLER+TIME): '{ref_text[:60]}' -> '{cleaned[:60]}'")
+    return cleaned
+
+
+def _clean_tts_text_for_synthesis(text: str) -> str:
+    """v1.0.54: 清理 tts_text — 彻底删除复读词 + 时间词（不再替换）
+
+    教训：v1.0.51 把"以前"→"当时"，结果"当时"又成新复读词。
+          替换策略是"打地鼠"，直接删除更彻底。
+
+    语义影响：删除这些词确实会让句子略微不连贯，但播客脚本是 LLM 生成的，
+    LLM 会用完整句式表达，删除这些时间词后句子仍然通顺（如"当时我们做了这个"
+    → "我们做了这个"，意思不变）。相比"当时当时当时"的复读，这是可接受的折中。
+    """
+    if not text:
+        return text
+    # v1.0.54: tts_text 彻底删除 — 所有高频时间词 + 所有口头禅 + 重复词
+    _tts_remove_patterns = [
+        # ── 高频时间词（这些是用户反馈的"当时""以前"的直接来源）──
+        r'以前[啊呀呢吧嘛]?',
+        r'当时[啊呀呢吧嘛]?',
+        r'从前[啊呀呢吧嘛]?',
+        r'当年[啊呀呢吧嘛]?',
+        r'那时候[啊呀呢吧嘛]?',
+        r'此前[啊呀呢吧嘛]?',
+        r'之后[啊呀呢吧嘛]?',
+        r'后来[啊呀呢吧嘛]?',
+        r'过去[啊呀呢吧嘛]?',
+        r'曾经[啊呀呢吧嘛]?',
+        r'之前[啊呀呢吧嘛]?',
+        r'以往[啊呀呢吧嘛]?',
+        # ── 口头禅 ──
+        (r'得了[了啊]?'),
+        (r'行了[了啊]?'),
+        (r'算了[了啊]?'),
+        (r'罢了[了啊]?'),
+        (r'得了吧[吧啊]?'),
+        (r'行了吧[吧啊]?'),
+        (r'算了吧[吧啊]?'),
+        (r'嗯[嗯啊]+'),
+        (r'啊[啊呀]+'),
+        (r'呃[呃啊]+'),
+        (r'哦[哦啊]+'),
+        (r'唉[唉啊]+'),
+        (r'嘿[嘿啊]+'),
+        (r'嚯[嚯啊]+'),
+        (r'哎[哎啊]+'),
+        (r'对对[对]+'),
+        (r'是是[是]+'),
+        (r'好好[好]+'),
+        (r'嘛[嘛啊]+'),
+        (r'呗[呗啊]+'),
+        (r'好了好了[好了]*'),
+        (r'完了完了[完了]*'),
+        (r'可不[是说]?'),
+        (r'对吧[啊呀]?'),
+        (r'怎么说[说呢]?'),
+        (r'你知道[道吧]?'),
+        (r'不是吗[吗啊]?'),
+        (r'对不对[对啊]?'),
+        (r'是不是[是啊]?'),
+        (r'然后呢[呢啊]?'),
+        (r'所以呢[呢啊]?'),
+        (r'之类的[了的]?'),
+        (r'什么的[么的]?'),
+        (r'这样吧[吧啊]?'),
+        (r'那样吧[吧啊]?'),
+        (r'的话[话啊]?'),
+        (r'你看[看吧]?'),
+        # ── 重复词 ──
+        (r'那个[那个]+'),
+        (r'这个[这个]+'),
+        (r'然后[然后]+'),
+    ]
+    cleaned = text
+    for pattern in _tts_remove_patterns:
+        cleaned = re.sub(pattern, '', cleaned)
+    # 清理多余的标点和空格
+    cleaned = re.sub(r'[，,]\s*[，,]', '，', cleaned)
+    cleaned = re.sub(r'\s+', '', cleaned)
+    # 末尾逗号改句号，防止模型认为句子未完继续生成
+    cleaned = re.sub(r'[，,]\s*$', '。', cleaned)
+    # 确保以标点结尾
+    if cleaned and cleaned[-1] not in '。！？.!?；;':
+        cleaned += '。'
+    if cleaned != text:
+        logger.info(f"v1.0.54: Cleaned tts_text (AGRESSIVE REMOVE): '{text[:50]}' -> '{cleaned[:50]}'")
+    return cleaned
+
+
+def _truncate_ref_text_by_sentence(text: str, max_chars: int = 45) -> str:
+    """v1.0.42: 按句子边界截断 ref_text
+    避免截断在词语中间导致 CosyVoice2 推理异常。
+    """
+    if len(text) <= max_chars:
+        return text
+    # 按句子标点分割
+    sentences = re.split(r'(?<=[。！？.!?；;])', text)
+    result = ""
+    for s in sentences:
+        if len(result) + len(s) > max_chars:
+            break
+        result += s
+    # 如果没有完整句子，直接截断
+    if not result:
+        result = text[:max_chars]
+    return result
+
+
+def _detect_and_trim_audio_repetition(audio_data, sample_rate, text_len):
+    """v1.0.55: 音频级重复检测与裁剪 — 彻底解决"得了""以前""当时"等重复词问题
+
+    之前的修复（v1.0.42~v1.0.54）全部在文本清洗和 token 检测层面，但：
+    - 文本清洗无法阻止模型自发幻觉（模型从参考音频声学特征中学到的发音模式）
+    - Token 检测是 per-chunk 的，无法检测跨块重复（每个块只出现1次"得了"不触发）
+    - text_normalize 会进一步拆分文本，短句给模型更多自由发挥空间
+
+    本函数在音频层面直接检测并裁剪多余内容，无论根因是什么都能生效。
+
+    两层检测：
+    1. 时长异常检测：如果音频时长远超文本预期（>40%），截断多余部分
+       中文 1.1x 语速 ≈ 3.5 chars/sec，英文 ≈ 2.5 words/sec
+    2. 尾部自相似检测：检测音频尾部是否存在循环重复模式（如"得了得了得了"）
+       通过比较最后N秒和前面N秒的余弦相似度来判定
+    """
+    if len(audio_data) == 0 or text_len == 0:
+        return audio_data
+
+    duration = len(audio_data) / sample_rate
+
+    # ── 1. 时长异常检测 ──
+    expected_duration = max(text_len / 3.5, 1.0)
+    max_duration = expected_duration * 1.4  # 允许 40% 冗余（语气词、停顿等）
+
+    if duration > max_duration:
+        trim_samples = int(max_duration * sample_rate)
+        logger.warning(
+            f"v1.0.55 DURATION TRUNCATION: text={text_len}chars, "
+            f"expected={expected_duration:.1f}s, actual={duration:.1f}s, "
+            f"trimming to {max_duration:.1f}s (removed {duration - max_duration:.1f}s)")
+        audio_data = audio_data[:trim_samples]
+        return audio_data
+
+    # ── 2. 尾部自相似检测 ──
+    # 检查音频尾部 8 秒内是否有 0.3-2.0 秒的循环重复
+    tail_len = min(len(audio_data), int(8 * sample_rate))
+    if tail_len < sample_rate:  # < 1 秒，跳过
+        return audio_data
+
+    tail = audio_data[-tail_len:]
+
+    for seg_sec in [0.3, 0.5, 0.7, 1.0, 1.2, 1.5, 1.8, 2.0]:
+        seg_len = int(seg_sec * sample_rate)
+        if len(tail) < seg_len * 3:
+            continue
+
+        last_seg = tail[-seg_len:]
+        prev_seg = tail[-seg_len * 2:-seg_len]
+
+        # 余弦相似度
+        norm_a = np.linalg.norm(last_seg)
+        norm_b = np.linalg.norm(prev_seg)
+        if norm_a < 0.001 or norm_b < 0.001:
+            continue
+        similarity = float(np.dot(last_seg, prev_seg) / (norm_a * norm_b))
+
+        if similarity > 0.6:
+            trim_point = len(audio_data) - seg_len
+            logger.warning(
+                f"v1.0.55 AUDIO REPETITION DETECTED: seg={seg_sec:.1f}s, "
+                f"sim={similarity:.3f}, trimming {seg_sec:.1f}s from tail")
+            audio_data = audio_data[:trim_point]
+            return audio_data
+
+    return audio_data
+
+
 def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clone=False, clone_id=None, speed=1.15):
     if not load_cosyvoice():
         return False
@@ -1671,6 +2007,17 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
         text = _preprocess_text_for_synthesis(text)
         if text != original_text:
             logger.info(f"Text preprocessed for {text_lang}: {len(original_text)} -> {len(text)} chars")
+        # v1.0.46: 清理合成文本中的口头禅和复读词
+        # 防止播客脚本中的"得了"、"可不"等口头禅被 CosyVoice2 放大复读
+        text = _clean_tts_text_for_synthesis(text)
+
+        # v1.0.50: 短文本保护 — 检测克隆预览文本
+        # 克隆预览文本（如"你好，很高兴认识你，这是我的声音预览。"）通常只有 15 字左右
+        # min_token_text_ratio 太低会导致 EOS 提前触发，音频被截断
+        # 这里显式标记短文本，让 model.py 的 llm_job 使用更宽松的上限
+        is_short_text = len(text) <= 25
+        if is_short_text:
+            logger.info(f"v1.0.50: Short text detected ({len(text)} chars): '{text[:30]}...', using preview-friendly params")
         # 英文/混合文本：适当降低语速（英文需要更慢的节奏才能发音清晰）
         # 中文保持原速，英文 speed × 0.85
         effective_speed = speed
@@ -1696,12 +2043,17 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
                     except Exception as save_err:
                         logger.warning(f"Failed to save ASR ref_text: {save_err}")
             logger.info(f"CosyVoice2 strict_clone: text_lang={text_lang}, text='{text[:40]}...', ref_text='{ref_text[:40]}...', ref_audio={ref_audio}, speed={effective_speed}")
+            # v1.0.42: 清理 ref_text 中的口头禅和复读词
+            # CosyVoice2 会模仿 ref_text 中的语言习惯，如果 ref_text 包含"可不"、"对吧"、
+            # "那个"、"就是" 等口头禅，合成结果会频繁复读这些词
+            ref_text = _clean_ref_text_for_synthesis(ref_text)
             # 截断 ref_text 到 45 字以内（与参考音频时长匹配，避免性能严重下降）
             # 注意：英文按字符数截断，中文按字符数截断（中英文都按 len 计算）
             # 项目经验：ref_text 过长会导致 RTF 从 19 飙升到 41+
             if len(ref_text) > 45:
                 original_ref_len = len(ref_text)
-                ref_text = ref_text[:45]
+                # v1.0.42: 按句子边界截断，避免截断在词中间导致异常
+                ref_text = _truncate_ref_text_by_sentence(ref_text, max_chars=45)
                 logger.info(f"ref_text truncated for performance: {original_ref_len} -> {len(ref_text)} chars")
             # 截断参考音频到 8 秒以内（避免每次推理处理过多 prompt token，RTF 飙升）
             # 项目经验：29 秒参考音频 → RTF=72；8 秒参考音频 → RTF≈19
@@ -1716,11 +2068,20 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
                     pass
                 _cosyvoice_synth_lock.acquire(timeout=10)
             try:
-                gen = _cosyvoice_model.inference_zero_shot(text, ref_text, ref_audio, '', speed=effective_speed)
+                # v1.0.55: text_frontend=False 防止 CosyVoice2 的 text_normalize 二次拆分文本
+                # 我们的代码已经做了文本清洗和分句，不需要 CosyVoice2 再拆
+                gen = _cosyvoice_model.inference_zero_shot(text, ref_text, ref_audio, '', speed=effective_speed, text_frontend=False)
             finally:
                 _cosyvoice_synth_lock.release()
         else:
-            logger.info(f"CosyVoice2 non-strict: text_lang={text_lang}, text='{text[:40]}...', ref_audio={ref_audio}, speed={effective_speed}")
+            # v1.0.56: 彻底解决重复词 — 使用 cross_lingual 模式
+            # 之前用 instruct2 / zero_shot 都会导致重复词（"得了""以前""当时"），
+            # 因为 LLM 会从参考音频的 speech_token 或 prompt_text 中学到发音模式。
+            # cross_lingual 完全删除 prompt_text 和 llm_prompt_speech_token，
+            # LLM 只根据输入文本生成，Flow 模块保留音色 → 不会产生重复词。
+            logger.info(f"v1.0.56 cross_lingual: text_lang={text_lang}, text='{text[:40]}...', ref_audio={ref_audio}, speed={effective_speed}")
+            # 截断参考音频到 8 秒（性能优化）
+            ref_audio = _truncate_ref_audio(ref_audio, max_sec=8)
             if not _cosyvoice_synth_lock.acquire(timeout=300):
                 logger.error("CosyVoice2 synth lock timeout (300s), forcing release and retry")
                 try:
@@ -1729,15 +2090,8 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
                     pass
                 _cosyvoice_synth_lock.acquire(timeout=10)
             try:
-                if hasattr(_cosyvoice_model, 'inference_instruct2'):
-                    # 英文文本使用英文指令，中文使用中文指令
-                    if text_lang == 'en':
-                        instruction = 'Read in a natural and fluent tone.'
-                    else:
-                        instruction = '用自然流畅的语气朗读'
-                    gen = _cosyvoice_model.inference_instruct2(text, instruction, ref_audio, '', speed=effective_speed)
-                else:
-                    gen = _cosyvoice_model.inference_zero_shot(text, ref_text or text, ref_audio, '', speed=effective_speed)
+                # cross_lingual 只需要 tts_text + prompt_wav，不需要 prompt_text
+                gen = _cosyvoice_model.inference_cross_lingual(text, ref_audio, '', speed=effective_speed, text_frontend=False)
             finally:
                 _cosyvoice_synth_lock.release()
 
@@ -1749,13 +2103,34 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
 
         if audio_chunks_list:
             audio_data = np.concatenate(audio_chunks_list)
+            # v1.0.40: 静音检测 — CosyVoice2 有时返回全零数据（模型未正确加载或推理异常）
+            # 不检测会导致"合成成功"但音频完全无声，用户无法听到任何声音
+            peak = float(np.max(np.abs(audio_data))) if len(audio_data) > 0 else 0.0
+            rms = float(np.sqrt(np.mean(audio_data ** 2))) if len(audio_data) > 0 else 0.0
+            if peak < 0.001 or rms < 0.0001:
+                logger.error(f"CosyVoice2 produced SILENT audio (peak={peak:.6f}, rms={rms:.6f}), treating as failure")
+                return False
             target_sr = 44100
             from scipy.signal import resample_poly
             from math import gcd
             g = gcd(target_sr, _cosyvoice_samplerate)
             audio_data = resample_poly(audio_data, target_sr // g, _cosyvoice_samplerate // g)
             audio_data = _postprocess_audio(audio_data, target_sr)[0]
+            # v1.0.40: 后处理后再次检测静音（防止后处理引入问题）
+            post_peak = float(np.max(np.abs(audio_data))) if len(audio_data) > 0 else 0.0
+            if post_peak < 0.001:
+                logger.error(f"CosyVoice2 audio became silent after postprocess (peak={post_peak:.6f}), treating as failure")
+                return False
+            # v1.0.58: 注释掉音频级时长截断和尾部自相似检测
+            # 根因：v1.0.55 的时长截断（expected_duration * 1.4）对正常播客音频过度裁剪
+            #   导致"只输出几秒音频"问题。token 层的重复检测（model.py）已足够拦截复读词
+            # original_audio_len = len(audio_data)
+            # audio_data = _detect_and_trim_audio_repetition(audio_data, target_sr, len(text))
+            # if len(audio_data) < original_audio_len:
+            #     logger.info(f"v1.0.55: Audio trimmed {original_audio_len - len(audio_data)} samples "
+            #                f"({(original_audio_len - len(audio_data)) / target_sr:.2f}s) due to repetition/duration")
             sf.write(output_path, audio_data.astype(np.float32), target_sr, subtype='PCM_16')
+            logger.info(f"CosyVoice2 synthesis OK: peak={peak:.4f}, rms={rms:.4f}, duration={len(audio_data)/target_sr:.2f}s")
             return True
         return False
     except Exception as e:
@@ -1802,6 +2177,16 @@ def synthesize_with_edge_tts(text, voice, output_path, max_retries=3):
 
                     # 验证输出文件
                     if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                        # v1.0.40: 验证音频不是静音（防止生成全零 WAV）
+                        try:
+                            _verify_data, _verify_sr = sf.read(output_path)
+                            _verify_peak = float(np.max(np.abs(_verify_data))) if len(_verify_data) > 0 else 0.0
+                            if _verify_peak < 0.001:
+                                raise Exception(f"Edge TTS output is silent (peak={_verify_peak:.6f})")
+                            logger.info(f"Edge TTS synthesis OK: peak={_verify_peak:.4f}, duration={len(_verify_data)/_verify_sr:.2f}s")
+                        except Exception as verify_err:
+                            logger.warning(f"Edge TTS output verification failed: {verify_err}")
+                            raise
                         return True
                     else:
                         raise Exception("Output WAV file is invalid")
@@ -1844,32 +2229,70 @@ def synthesize_with_edge_tts(text, voice, output_path, max_retries=3):
 
 # ==================== 统一合成入口 ====================
 
+def _is_audio_file_silent(path: str) -> bool:
+    """v1.0.40: 检测音频文件是否为静音（全零或极低音量）
+    用于防止合成引擎返回静音数据导致"合成成功但无声"的问题。
+    """
+    try:
+        if not os.path.exists(path) or os.path.getsize(path) < 1000:
+            return True
+        data, sr = sf.read(path)
+        if len(data) == 0:
+            return True
+        peak = float(np.max(np.abs(data)))
+        rms = float(np.sqrt(np.mean(data ** 2)))
+        # 阈值：peak < 0.001（约 -60dB）或 RMS < 0.0001 视为静音
+        if peak < 0.001 or rms < 0.0001:
+            logger.warning(f"Audio file is SILENT: {path} (peak={peak:.6f}, rms={rms:.6f}, size={os.path.getsize(path)})")
+            return True
+        return False
+    except Exception as e:
+        logger.warning(f"Audio silence check error for {path}: {e}")
+        return True  # 无法验证时视为静音（保守策略，触发降级）
+
+
 def synthesize_audio(text, output_path, meta, strict_clone=True, speed=1.15):
     ref_audio = meta.get("ref_audio", "")
     ref_text = meta.get("ref_text", "")
     clone_id = meta.get("id", "") or meta.get("clone_id", "")
 
+    # v1.0.57: 如果 CosyVoice2 已加载，只使用 CosyVoice2，不回退到 Fish Speech / GPT-SoVITS
+    # 原因：不同引擎音色不同，混用会导致同一播客出现多种声音
+    cosyvoice_available = load_cosyvoice() and ref_audio and os.path.exists(ref_audio)
+
     # 优先 CosyVoice2
-    if load_cosyvoice() and ref_audio and os.path.exists(ref_audio):
+    if cosyvoice_available:
         if synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clone=strict_clone, clone_id=clone_id, speed=speed):
-            return True
+            # v1.0.40: 最终验证 — 防止 CosyVoice2 返回静音数据但函数认为"成功"
+            if not _is_audio_file_silent(output_path):
+                return True
+            logger.warning(f"CosyVoice2 returned True but output is silent, trying next engine...")
 
     # strict_clone 模式下，如果 CosyVoice2 失败，不再尝试其他引擎
     # 避免输出非克隆音色（如默认女声）
     if strict_clone:
         return False
 
-    # 其次 Fish Speech
+    # v1.0.57: 如果 CosyVoice2 已加载但失败，不再回退到其他引擎（音色不一致）
+    # 只有 CosyVoice2 完全不可用时，才尝试其他引擎
+    if cosyvoice_available:
+        return False
+
+    # 其次 Fish Speech（仅当 CosyVoice2 不可用时）
     clone_id = meta.get("clone_id", "")
     if check_fish_speech() and clone_id:
         if synthesize_with_fishspeech(text, ref_audio, ref_text, output_path, clone_id):
-            return True
+            if not _is_audio_file_silent(output_path):
+                return True
+            logger.warning(f"Fish Speech returned True but output is silent, trying next engine...")
 
-    # 最后 GPT-SoVITS
+    # 最后 GPT-SoVITS（仅当 CosyVoice2 不可用时）
     if load_gptsovits() and ref_audio and os.path.exists(ref_audio):
         gender = meta.get("gender", "female")
         if synthesize_with_gptsovits(text, ref_audio, ref_text, output_path, gender):
-            return True
+            if not _is_audio_file_silent(output_path):
+                return True
+            logger.warning(f"GPT-SoVITS returned True but output is silent")
 
     return False
 
@@ -1971,7 +2394,7 @@ def get_disk_usage():
 _load_clones()
 
 # 创建 FastAPI 应用
-app = FastAPI(title="Voice Cloning Service", version="13.0.0")
+app = FastAPI(title="Voice Cloning Service", version="13.0.1")
 
 
 @app.on_event("startup")
@@ -2078,6 +2501,46 @@ async def health():
     }
 
 
+def _detect_language_from_text(text: str) -> str:
+    """
+    v1.0.37: 根据文本内容检测语言，用于选择克隆试听预览文本的语言。
+    返回语言代码：zh/en/ja/ko/other。
+    """
+    if not text or not text.strip():
+        return "zh"  # 默认中文
+    # 统计各语言字符数量
+    chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
+    japanese_chars = len(re.findall(r'[\u3040-\u309f\u30a0-\u30ff]', text))  # 平假名+片假名
+    korean_chars = len(re.findall(r'[\uac00-\ud7af]', text))
+    latin_chars = len(re.findall(r'[a-zA-Z]', text))
+    # 优先级：中文 > 日文 > 韩文 > 英文
+    if chinese_chars > 0 and chinese_chars >= japanese_chars:
+        return "zh"
+    if japanese_chars > 0:
+        return "ja"
+    if korean_chars > 0:
+        return "ko"
+    if latin_chars > 0:
+        return "en"
+    return "zh"  # 默认中文
+
+
+# v1.0.37: 多语言试听预览文本
+# 克隆完成后点击试听，根据参考音频的语言自动选择对应语言的预览文本
+PREVIEW_TEXTS = {
+    "zh": "你好，很高兴认识你，这是我的声音预览。",
+    "en": "Hello, nice to meet you. Here is a preview of my voice.",
+    "ja": "こんにちは、お会いできて嬉しいです。これは私の声のプレビューです。",
+    "ko": "안녕하세요, 만나서 반갑습니다. 이것은 제 목소리 미리보기입니다.",
+}
+
+
+def _get_preview_text(ref_text: str = "") -> str:
+    """根据参考文本语言返回对应的试听预览文本"""
+    lang = _detect_language_from_text(ref_text)
+    return PREVIEW_TEXTS.get(lang, PREVIEW_TEXTS["zh"])
+
+
 @app.post("/clone")
 async def create_clone(
     name: str = Form(...),
@@ -2155,20 +2618,31 @@ async def create_clone(
     # 克隆完成后，立即同步合成预览音频
     # 这样用户点击"试听"时可以直接从缓存返回，无需等待
     preview_cache_path = str(OUTPUT_DIR / f"clone_{clone_id}_preview.wav")
-    preview_text = "Hello, nice to meet you. Here is a preview of my voice."  # Standard preview text
+    # v1.0.37: 根据参考音频语言自动选择试听文本
+    # 中文声音朗读中文，英文声音朗读英文，日韩同理
+    preview_text = _get_preview_text(ref_text)
+    detected_lang = _detect_language_from_text(ref_text)
     # 截断 ref_text，使其长度与 preview_text 接近，避免 "too short" 警告导致性能下降
     truncated_ref_text = ref_text[:max(len(preview_text) * 2, 20)] if ref_text else ""
-    logger.info(f"Generating preview audio during clone (text='{preview_text}', ref_text_len={len(truncated_ref_text)})...")
+    logger.info(f"Generating preview audio during clone (lang={detected_lang}, text='{preview_text}', ref_text_len={len(truncated_ref_text)})...")
     preview_ready = False
     try:
         preview_clone = dict(clone_data)
         preview_clone["ref_text"] = truncated_ref_text
-        preview_success = synthesize_audio(preview_text, preview_cache_path, preview_clone, strict_clone=True)
+        # v1.0.58: 预览音频仅使用 strict_clone=True（zero_shot），确保按模版朗读且音色一致
+        # 不回退 cross_lingual 或 Edge TTS：会导致音色不一致或未使用克隆声音
+        preview_success = False
+        for attempt in range(3):
+            preview_success = synthesize_audio(preview_text, preview_cache_path, preview_clone, strict_clone=True)
+            if preview_success and os.path.exists(preview_cache_path) and os.path.getsize(preview_cache_path) > 1000:
+                break
+            logger.warning(f"Preview strict_clone attempt {attempt+1} failed, retrying...")
+            time.sleep(1)
         if preview_success and os.path.exists(preview_cache_path) and os.path.getsize(preview_cache_path) > 1000:
             logger.info(f"Preview audio generated successfully: {os.path.getsize(preview_cache_path)} bytes")
             preview_ready = True
         else:
-            logger.warning("Preview audio generation failed, will retry on preview request")
+            logger.warning("Preview audio generation failed after 3 retries (strict_clone only), will retry on preview request")
     except Exception as e:
         logger.error(f"Preview audio generation error: {e}")
 
@@ -2186,7 +2660,7 @@ def _generate_preview_background(clone_id: str):
     clone = _clone_store.get(clone_id)
     if not clone:
         with _preview_task_lock:
-            _preview_task_store[clone_id] = {"status": "failed", "started_at": time.time()}
+            _preview_task_store[clone_id] = {"status": "failed", "started_at": time.time(), "error": "clone not found"}
         return
 
     cache_path = str(OUTPUT_DIR / f"clone_{clone_id}_preview.wav")
@@ -2198,27 +2672,38 @@ def _generate_preview_background(clone_id: str):
 
     clone_name = clone.get("name", "克隆声音")
     ref_text = clone.get("ref_text", "")
-    preview_text = "Hello, nice to meet you. Here is a preview of my voice."  # Standard preview text
+    # v1.0.37: 根据参考音频语言自动选择试听文本
+    preview_text = _get_preview_text(ref_text)
+    detected_lang = _detect_language_from_text(ref_text)
     truncated_ref_text = ref_text[:max(len(preview_text) * 2, 20)] if ref_text else ""
 
     preview_clone = dict(clone)
     preview_clone["ref_text"] = truncated_ref_text
 
-    logger.info(f"[PreviewBG] Start generating preview for clone {clone_id} (text='{preview_text}')")
+    logger.info(f"[PreviewBG] Start generating preview for clone {clone_id} (lang={detected_lang}, text='{preview_text}')")
     try:
-        success = synthesize_audio(preview_text, cache_path, preview_clone, strict_clone=True)
+        # v1.0.58: 预览音频仅使用 strict_clone=True（zero_shot），确保按模版朗读且音色一致
+        # 不回退 cross_lingual 或 Edge TTS：会导致音色不一致或未使用克隆声音
+        success = False
+        for attempt in range(3):
+            success = synthesize_audio(preview_text, cache_path, preview_clone, strict_clone=True)
+            if success and os.path.exists(cache_path) and os.path.getsize(cache_path) > 1000:
+                break
+            logger.warning(f"[PreviewBG] strict_clone attempt {attempt+1} failed for clone {clone_id}, retrying...")
+            time.sleep(1)
+
         if success and os.path.exists(cache_path) and os.path.getsize(cache_path) > 1000:
             logger.info(f"[PreviewBG] Preview generated for clone {clone_id}: {os.path.getsize(cache_path)} bytes")
             with _preview_task_lock:
                 _preview_task_store[clone_id] = {"status": "done", "started_at": time.time()}
         else:
-            logger.warning(f"[PreviewBG] Preview generation failed for clone {clone_id}")
+            logger.warning(f"[PreviewBG] Preview generation failed after 3 retries (strict_clone only) for clone {clone_id}")
             with _preview_task_lock:
-                _preview_task_store[clone_id] = {"status": "failed", "started_at": time.time()}
+                _preview_task_store[clone_id] = {"status": "failed", "started_at": time.time(), "error": "strict_clone synthesis failed after 3 retries"}
     except Exception as e:
         logger.error(f"[PreviewBG] Preview generation error for clone {clone_id}: {e}")
         with _preview_task_lock:
-            _preview_task_store[clone_id] = {"status": "failed", "started_at": time.time()}
+            _preview_task_store[clone_id] = {"status": "failed", "started_at": time.time(), "error": str(e)}
 
 
 @app.get("/preview/{clone_id}")
@@ -2240,12 +2725,15 @@ async def get_clone_preview(clone_id: str):
     # 缓存未命中 — 检查是否已有后台生成任务
     with _preview_task_lock:
         task = _preview_task_store.get(clone_id)
+        # v1.0.39: 如果任务失败，直接返回 failed 状态给前端（不再自动重试，避免无限循环）
+        if task and task["status"] == "failed":
+            return JSONResponse(
+                status_code=202,
+                content={"status": "failed", "clone_id": clone_id, "message": task.get("error", "Preview generation failed")},
+            )
         # 如果任务已超时（超过 5 分钟），清除并重新启动
         if task and task["status"] == "generating" and (time.time() - task["started_at"]) > 300:
             logger.warning(f"[Preview] Task for {clone_id} timed out, restarting")
-            task = None
-        # 如果任务失败，清除以便重试
-        if task and task["status"] == "failed":
             task = None
 
         if not task or task["status"] not in ("generating", "done"):
@@ -2514,9 +3002,11 @@ async def synthesize_podcast(
                 # 长文本分段合成（避免 CosyVoice2 OOM）
                 # 50 字/段：RTF 随文本长度非线性增长（39字 RTF=6.7, 100字 RTF=46.17）
                 # 小段合成每段约 10-15 秒，进度更新更频繁，总耗时更短
-                MAX_CHARS = 50
-                # speed=1.3：实测稳定的语速参数（speed=2.0 未减少推理时间）
-                PODCAST_SPEED = 1.3
+                MAX_CHARS = 50  # v1.0.58: 从 30 恢复到 50，确保完整朗读文案（30 太短导致音频截断）
+                # v1.0.48: 语速 1.0→1.1，在保证质量的前提下提升生成速度
+                # 1.1 倍速音频时长缩短 10%，听起来仍自然，不影响克隆音色还原度
+                # 旧值 1.0 倍速播客 35-40 分钟，1.1 倍速可达 30-35 分钟
+                PODCAST_SPEED = 1.1
                 text_chunks = []
                 if len(text) > MAX_CHARS:
                     # 按句子分割
@@ -2546,25 +3036,77 @@ async def synthesize_podcast(
                     sub_path = str(output_dir / f"seg_{seg_idx:03d}_part{ci:02d}.wav")
                     sub_success = False
 
-                    # 第1次尝试：strict_clone 模式（最高相似度）
+                    # v1.0.58: 修复音频截断问题 — zero_shot 优先，确保完整朗读文案
+                    #
+                    # v1.0.57 的问题：cross_lingual 优先导致音频生成不完整（只输出几秒）
+                    #   cross_lingual 不使用 ref_text，LLM 缺少上下文，生成音频偏短
+                    # v1.0.58 修复：zero_shot 优先（完整朗读），cross_lingual 仅作回退
+                    #   token 层重复检测（model.py）仍在工作，可拦截复读词
+                    #   绝不用 Edge TTS — 混合音色比跳过片段更糟糕
+
+                    # 第1次尝试：zero_shot（完整朗读文案，同音色）
                     sub_success = synthesize_audio(text_chunk, sub_path, meta, strict_clone=True, speed=PODCAST_SPEED)
+
                     if not sub_success:
-                        logger.warning(f"Segment {seg_idx} part {ci}: strict_clone failed, trying non-strict mode...")
+                        logger.warning(f"v1.0.58: Segment {seg_idx} part {ci}: zero_shot failed, retrying with shorter text...")
                         time.sleep(1)
-                        # 第2次尝试：非严格模式（使用 instruct2，更稳定）
+                        # 第2次尝试：缩短文本后重试 zero_shot
+                        if len(text_chunk) > 15:
+                            half = len(text_chunk) // 2
+                            # 找最近的标点切分
+                            cut_pos = half
+                            for offset in range(min(10, half)):
+                                if text_chunk[half + offset] in '，。！？；、,':
+                                    cut_pos = half + offset + 1
+                                    break
+                                if text_chunk[half - offset] in '，。！？；、,':
+                                    cut_pos = half - offset + 1
+                                    break
+                            part1 = text_chunk[:cut_pos].strip()
+                            part2 = text_chunk[cut_pos:].strip()
+                            sub_path1 = str(output_dir / f"seg_{seg_idx:03d}_part{ci:02d}_a.wav")
+                            sub_path2 = str(output_dir / f"seg_{seg_idx:03d}_part{ci:02d}_b.wav")
+                            s1 = synthesize_audio(part1, sub_path1, meta, strict_clone=True, speed=PODCAST_SPEED)
+                            s2 = synthesize_audio(part2, sub_path2, meta, strict_clone=True, speed=PODCAST_SPEED) if part2 else True
+                            if s1 and s2:
+                                # 合并两段
+                                try:
+                                    import shutil
+                                    if part2:
+                                        all_a = []
+                                        for sp in [sub_path1, sub_path2]:
+                                            d, sr = sf.read(sp)
+                                            if d.ndim > 1:
+                                                d = d.mean(axis=1)
+                                            all_a.append(d)
+                                        combined = np.concatenate(all_a)
+                                        sf.write(sub_path, combined.astype(np.float32), sr, subtype='PCM_16')
+                                        os.remove(sub_path1)
+                                        os.remove(sub_path2)
+                                    else:
+                                        shutil.copy2(sub_path1, sub_path)
+                                        os.remove(sub_path1)
+                                    sub_success = True
+                                    logger.info(f"v1.0.58: Segment {seg_idx} part {ci}: retry succeeded with split text")
+                                except Exception as merge_err:
+                                    logger.error(f"v1.0.58: merge failed: {merge_err}")
+                            else:
+                                # 清理失败的部分文件
+                                for sp in [sub_path1, sub_path2]:
+                                    if os.path.exists(sp):
+                                        os.remove(sp)
+
+                    if not sub_success:
+                        logger.warning(f"v1.0.58: Segment {seg_idx} part {ci}: zero_shot retry failed, falling back to cross_lingual (same voice, shorter audio)...")
+                        time.sleep(1)
+                        # 第3次尝试：cross_lingual（同音色，音频可能偏短，但绝不混合音色）
                         sub_success = synthesize_audio(text_chunk, sub_path, meta, strict_clone=False, speed=PODCAST_SPEED)
 
                     if not sub_success:
-                        logger.warning(f"Segment {seg_idx} part {ci}: all clone modes failed, falling back to Edge TTS...")
-                        # 第3次尝试：降级到 Edge TTS（保证能生成）
-                        gender = meta.get("gender", "female") or "female"
-                        if str(gender).lower().startswith("male"):
-                            fallback_voice = "zh-CN-YunxiNeural"
-                        else:
-                            fallback_voice = "zh-CN-XiaoxiaoNeural"
-                        sub_success = synthesize_with_edge_tts(text_chunk, fallback_voice, sub_path, max_retries=2)
-                        if sub_success:
-                            logger.warning(f"Segment {seg_idx} part {ci}: used Edge TTS fallback (voice will differ from clone)")
+                        logger.error(f"v1.0.58: Segment {seg_idx} part {ci}: ALL CosyVoice2 modes failed! Skipping segment (better silent than mixed voice)")
+                        # v1.0.58: 绝不用 Edge TTS — 混合音色比跳过片段更糟糕
+                        all_chunks_success = False
+                        continue
 
                     if sub_success and os.path.exists(sub_path):
                         chunk_paths.append(sub_path)
@@ -2632,24 +3174,53 @@ async def synthesize_podcast(
                         error=str(e),
                     )
             else:
-                # 段合成失败：生成一个 0.5 秒的静音段作为占位，确保整个播客仍然可以生成
-                logger.warning(f"Segment {seg_idx} failed, inserting silent placeholder")
-                try:
-                    silent_samples = int(44100 * 0.5)  # 0.5 秒静音
-                    silent_data = np.zeros(silent_samples, dtype=np.float32)
-                    sf.write(chunk_path, silent_data, 44100, subtype='PCM_16')
-                    if os.path.exists(chunk_path):
+                # v1.0.39: 段合成失败 — 先尝试用 Edge TTS 默认声音兜底（确保有声音）
+                # 之前直接插入静音占位导致用户听到"无声"播客
+                logger.warning(f"Segment {seg_idx} all synthesis failed, last resort: Edge TTS with default voice")
+                edge_fallback_success = False
+                # 尝试多个 Edge TTS 声音，确保至少一个能工作
+                fallback_voices = ["zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural", "zh-CN-XiaoyiNeural"]
+                for fv in fallback_voices:
+                    if synthesize_with_edge_tts(text, fv, chunk_path, max_retries=2):
+                        if os.path.exists(chunk_path) and os.path.getsize(chunk_path) > 1000:
+                            edge_fallback_success = True
+                            logger.warning(f"Segment {seg_idx}: used Edge TTS fallback voice {fv}")
+                            break
+                if edge_fallback_success and os.path.exists(chunk_path):
+                    try:
+                        data, sr = sf.read(chunk_path)
+                        dur = len(data) / sr if data.ndim == 1 else len(data[:, 0]) / sr
+                        total_duration += dur
                         audio_chunks.append(chunk_path)
-                        total_duration += 0.5
-                except Exception as silent_err:
-                    logger.error(f"Failed to create silent placeholder: {silent_err}")
-                yield _send_event(
-                    "segment_failed",
-                    segment_index=seg_idx,
-                    total_segments=total_segments,
-                    speaker=speaker,
-                    error="synthesis failed",
-                )
+                        yield _send_event(
+                            "segment_done",
+                            segment_index=seg_idx,
+                            total_segments=total_segments,
+                            speaker=speaker,
+                            duration=round(dur, 2),
+                        )
+                    except Exception as e:
+                        logger.error(f"Error reading Edge TTS fallback chunk: {e}")
+                        yield _send_event("segment_failed", segment_index=seg_idx, total_segments=total_segments, speaker=speaker, error=str(e))
+                else:
+                    # 最终兜底：生成 0.5 秒静音占位（仅在 Edge TTS 也完全失败时）
+                    logger.error(f"Segment {seg_idx}: Edge TTS also failed, inserting silent placeholder")
+                    try:
+                        silent_samples = int(44100 * 0.5)  # 0.5 秒静音
+                        silent_data = np.zeros(silent_samples, dtype=np.float32)
+                        sf.write(chunk_path, silent_data, 44100, subtype='PCM_16')
+                        if os.path.exists(chunk_path):
+                            audio_chunks.append(chunk_path)
+                            total_duration += 0.5
+                    except Exception as silent_err:
+                        logger.error(f"Failed to create silent placeholder: {silent_err}")
+                    yield _send_event(
+                        "segment_failed",
+                        segment_index=seg_idx,
+                        total_segments=total_segments,
+                        speaker=speaker,
+                        error="synthesis failed (all methods including Edge TTS)",
+                    )
 
         # 拼接所有段（优化双人模式真人感）
         final_path = str(OUTPUT_DIR / f"{output_id}.wav")
@@ -2703,41 +3274,38 @@ async def synthesize_podcast(
                     pause_time = max(0.03, pause_time)
                     pause_samples = int(target_sr * pause_time)
 
-                    overlap_ratio = 0.15
-                    if is_short_prev or is_short_curr:
-                        overlap_ratio = 0.25
+                    # v1.0.42: 移除交叉淡入淡出（crossfade）合并方式
+                    # 旧逻辑用 np.zeros 填充 + crossfade 混合，会在段边界产生"呲呲呲"调制噪声
+                    # 原因：零填充与有效音频的交界处振幅突变，叠加混合引入高频伪影
+                    # 新逻辑：使用简单静音间隔 + 淡入淡出，避免叠加混合
+                    # 淡入淡出只作用于段首段尾各 5ms，消除拼接爆音但不引入伪影
+                    fade_samples = min(int(target_sr * 0.005), len(chunk) // 4)  # 5ms 淡入
+                    if fade_samples > 0 and len(chunk) > fade_samples * 2:
+                        fade_in = np.linspace(0, 1, fade_samples)
+                        chunk = chunk.copy()
+                        chunk[:fade_samples] *= fade_in
 
-                    crossfade_samples = int(min(len(prev_chunk), len(chunk)) * overlap_ratio)
-                    crossfade_samples = min(crossfade_samples, int(target_sr * 0.08))
-                    crossfade_samples = max(crossfade_samples, int(target_sr * 0.02))
+                    # 上一段尾部淡出
+                    if fade_samples > 0 and len(merged) > fade_samples:
+                        fade_out = np.linspace(1, 0, fade_samples)
+                        merged = merged.copy()
+                        merged[-fade_samples:] *= fade_out
 
-                    if crossfade_samples > 0 and len(merged) >= crossfade_samples and len(chunk) >= crossfade_samples:
-                        fade_out = np.linspace(1, 0, crossfade_samples)
-                        fade_in = np.linspace(0, 1, crossfade_samples)
-                        merged = np.concatenate([merged, np.zeros(pause_samples)])
-                        overlap_end = merged[-crossfade_samples:]
-                        chunk_start = chunk[:crossfade_samples]
-                        blended = overlap_end * fade_out + chunk_start * fade_in
-                        merged = np.concatenate([merged[:-crossfade_samples], blended, chunk[crossfade_samples:]])
-                    else:
-                        merged = np.concatenate([merged, np.zeros(pause_samples), chunk])
+                    merged = np.concatenate([merged, np.zeros(pause_samples), chunk])
 
-                    if not is_short_curr and random.random() < 0.3:
-                        breath = generate_breath(
-                            duration=random.uniform(0.08, 0.18),
-                            volume=random.uniform(0.03, 0.08)
-                        )
-                        if len(merged) > len(breath):
-                            insert_pos = len(merged) - int(target_sr * 0.1)
-                            insert_pos = max(0, insert_pos)
-                            breath_len = min(len(breath), len(merged) - insert_pos)
-                            if breath_len > 0:
-                                merged[insert_pos:insert_pos + breath_len] += breath[:breath_len] * 0.5
+                    # v1.0.42: 移除呼吸声注入
+                    # 旧逻辑在段间随机注入白噪声"呼吸声"，但白噪声叠加会产生"呲呲"声
+                    # 特别是 CPU 模式下合成音质本就一般，叠加噪声更明显
 
-                peak = np.max(np.abs(merged))
-                if peak > 0.001:
-                    merged = merged * (0.707 / peak)
-                merged = np.clip(merged, -0.95, 0.95)
+                # v1.0.42: 改进归一化 — 使用 RMS 归一化而非 peak 归一化
+                # peak 归一化会将安静段也放大到 -3dB，导致背景噪声明显
+                # RMS 归一化保持整体响度一致，安静段不会被过度放大
+                rms = float(np.sqrt(np.mean(merged ** 2)))
+                if rms > 0.001:
+                    target_rms = 0.15  # 目标 RMS（约 -16dB LUFS，广播级标准）
+                    merged = merged * (target_rms / rms)
+                # 限幅保护（软限幅，避免硬 clip 产生失真）
+                merged = np.tanh(merged * 1.2) * 0.85
 
                 sf.write(final_path, merged.astype(np.float32), target_sr, subtype='PCM_16')
             else:

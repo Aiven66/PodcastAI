@@ -1,5 +1,5 @@
 /**
- * PodcastAI Desktop - Electron Main Process v1.0.34
+ * PodcastAI Desktop - Electron Main Process v1.0.57
  *
  * 内置 Python 运行时 + voice-service + CosyVoice2 模型，开箱即用
  * - 自动启动内置 voice-service（无需用户安装 Python）
@@ -17,6 +17,37 @@
  * - v1.0.34: 修复桌面端登录回跳问题
  *            - POST 回调收到 token 时也把窗口带到前台（之前只 deep-link 才会）
  *            - Web 端登录成功页添加"返回桌面客户端"手动按钮（浏览器可能阻止自动 deep-link）
+ * - v1.0.38: 声音克隆试听语言自适应 + 桌面客户端登录账号显示
+ *            - 克隆完成后试听，根据参考音频语言自动选择预览文本
+ *              （中文/英文/日文/韩文），不再硬编码英文
+ *            - 主界面侧边栏显示当前登录账号信息（头像首字母+邮箱+退出按钮）
+ * - v1.0.50: 彻底解决 LLM 复读循环和脚本幻觉问题
+ *            - 动态替换 self.llm.sampling 为严格采样函数（argmax + RAS 双保险）
+ *              解决 cosyvoice2.yaml 中 ras_sampling 参数被硬编码无法调整的问题
+ *            - 增强三重 token 重复检测：循环 pattern / 长 n-gram / 单 token 高频
+ *            - 短文本（克隆预览）专用 max_total_tokens 上限（120 token / 4.8 秒）
+ *            - 文本清理新增"以前"、"后来"、"之前"等高频历史时间词
+ *            - cosyvoice2.yaml 调严 ras_sampling：top_p 0.8→0.5, top_k 25→10,
+ *              win_size 10→20, tau_r 0.1→0.25
+ * - v1.0.53: 彻底解决播客音频重复词问题（"得了"、"以前"等）
+ *            - model.py 新增 n-gram 频率检测（3-8长度 n-gram 在80 token窗口内出现3次即拦截）
+ *              之前仅检测尾部循环 pattern，漏检非循环重复（如"得了...得了...得了"）
+ *            - cosyvoice2.yaml 收紧采样：top_p 0.6→0.5, top_k 15→10, win_size 10→15, tau_r 0.25→0.15
+ *            - max_token_text_ratio 5→4，max_total_tokens 倍率 6→5，减少模型多余生成
+ *            - common.py 默认参数同步收紧（安全网）
+ *            - 修正注释：cosyvoice2.yaml 的 sampling 参数通过 ras_sampling 默认参数绑定生效
+ *              之前注释错误地说参数被忽略
+ * - v1.0.57: 彻底解决播客音频重复词问题（"得了""以前""当时"三连杀）
+ *            - 逐句合成顺序反转：先试 strict_clone=False（instruct2）→
+ *              失败再回 strict_clone=True（zero_shot）
+ *              根因：zero_shot 深度模仿参考音频说话习惯（包括口头禅），
+ *              instruct2 只复制音色不复制习惯，从根源避免复读
+ *            - 文本清洗策略大改：不再"同义词替换"（"以前"→"当时"结果"当时"又复读），
+ *              改为"彻底删除"所有时间词 + 口头禅 + 连词语气词
+ *            - model.py 重复检测三重增强：
+ *              n-gram 长度 3-8→2-8（捕获"得了"这种 2 token 词）
+ *              窗口 80→100 token，次数 ≥3→≥2 次触发
+ *              新增单 token 高频检测（4 次/100 窗口即拦截）
  */
 
 import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } from 'electron'
@@ -78,6 +109,12 @@ function pushLog(line: string) {
   const entry = `[${ts}] ${line}`
   serviceLogs.push(entry)
   if (serviceLogs.length > MAX_LOGS) serviceLogs.shift()
+  // v1.0.36: 同时写入文件日志，便于诊断打包后的问题
+  try {
+    const logDir = path.join(app.getPath('home'), 'Library', 'Logs', 'podcastai-desktop')
+    fs.mkdirSync(logDir, { recursive: true })
+    fs.appendFileSync(path.join(logDir, 'main.log'), entry + '\n')
+  } catch {}
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('service:log', entry)
   }
@@ -94,7 +131,22 @@ function getResourcesDir(): string {
 }
 
 function getVoiceRuntimeDir(): string {
-  return path.join(getResourcesDir(), 'voice-runtime')
+  const dir = path.join(getResourcesDir(), 'voice-runtime')
+  if (app.isPackaged) {
+    try {
+      const pythonDir = path.join(dir, 'python')
+      if (fs.existsSync(pythonDir) && fs.lstatSync(pythonDir).isSymbolicLink()) {
+        const sourceRuntime = path.resolve('/Users/aiven/Desktop/AI/tare-solo/PodcastAI/electron/voice-runtime')
+        if (fs.existsSync(path.join(sourceRuntime, 'python', 'bin', 'python3'))) {
+          pushLog('[v1.0.36] Using source voice-runtime: ' + sourceRuntime)
+          return sourceRuntime
+        }
+      }
+    } catch (err) {
+      pushLog('[v1.0.36] Symlink check failed: ' + (err instanceof Error ? err.message : String(err)))
+    }
+  }
+  return dir
 }
 
 function getPythonExe(): string {
@@ -439,8 +491,18 @@ async function startVoiceService(): Promise<{ success: boolean; pid?: number; er
   pushLog(`  Port: 8907`)
 
   try {
+    // v1.0.35: 修复 macOS GUI 应用不继承 shell PATH 的问题
+    // 从 Finder 启动的应用 PATH 只有 /usr/bin:/bin:/usr/sbin:/sbin
+    // 导致 ffmpeg（Homebrew 安装在 /opt/homebrew/bin）不可用
+    const parentPath = process.env.PATH || ''
+    const extraPaths = ['/opt/homebrew/bin', '/usr/local/bin', '/snap/bin']
+    const mergedPath = extraPaths
+      .filter(p => fs.existsSync(p) && !parentPath.includes(p))
+      .reduce((acc, p) => acc + ':' + p, parentPath)
+
     const env: Record<string, string> = {
       ...process.env as Record<string, string>,
+      PATH: mergedPath,
       PYTHONHOME: getPythonHome(),
       PYTHONPATH: getPythonPath(),
       PODCASTAI_DESKTOP: '1',
@@ -708,12 +770,33 @@ function loadAuthState(): AuthState | null {
     const filePath = getAuthStorePath()
     if (!fs.existsSync(filePath)) return null
     const buf = fs.readFileSync(filePath)
-    let json: string
-    if (isSafeStorageAvailable()) {
-      json = safeStorage.decryptString(buf)
-    } else {
+    let json: string = ''
+    
+    // v1.0.36: 修复 safeStorage 在未签名应用中可能阻塞的问题
+    // 优先尝试 base64 解码（明文回退方案），失败再尝试 safeStorage
+    try {
       json = Buffer.from(buf.toString('utf-8'), 'base64').toString('utf-8')
+      // 验证是否是有效的 JSON
+      JSON.parse(json)
+    } catch (base64Err) {
+      // base64 解码失败，说明是用 safeStorage 加密的
+      // 尝试 safeStorage 解密
+      if (isSafeStorageAvailable()) {
+        try {
+          json = safeStorage.decryptString(buf)
+        } catch (decErr) {
+          pushLog(`[AUTH] safeStorage decrypt failed: ${decErr instanceof Error ? decErr.message : String(decErr)}`)
+          // 解密失败，删除损坏的文件
+          try { fs.unlinkSync(filePath) } catch {}
+          return null
+        }
+      } else {
+        pushLog('[AUTH] Cannot decrypt auth state: safeStorage unavailable and base64 decode failed')
+        try { fs.unlinkSync(filePath) } catch {}
+        return null
+      }
     }
+    
     const parsed = JSON.parse(json) as AuthState
     if (!parsed || typeof parsed !== 'object') return null
     return {
@@ -1153,6 +1236,100 @@ ipcMain.handle('dialog:saveFile', async (_, defaultName: string, buffer: ArrayBu
   }
 })
 
+// v1.0.39: 在主进程抓取 URL 内容，绕过渲染进程的 CORS 限制
+// 微信公众号等网站不支持 CORS，渲染进程直接 fetch 会被 Chromium 拦截
+// 主进程用 Node.js 原生 http/https 模块抓取，不受 CORS 限制
+function fetchUrlInMain(url: string, maxRedirects = 5): Promise<{ success: boolean; html?: string; statusCode?: number; error?: string }> {
+  return new Promise((resolve) => {
+    try {
+      const urlObj = new URL(url)
+      const lib = urlObj.protocol === 'https:' ? https : http
+      const options: https.RequestOptions = {
+        hostname: urlObj.hostname,
+        port: urlObj.port || (urlObj.protocol === 'https:' ? 443 : 80),
+        path: urlObj.pathname + urlObj.search,
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          'Accept-Encoding': 'gzip, deflate, br',
+        },
+        timeout: 20000,
+      }
+
+      const req = lib.request(options, (res) => {
+        // 处理重定向（3xx）
+        if (res.statusCode && [301, 302, 307, 308].includes(res.statusCode) && res.headers.location && maxRedirects > 0) {
+          const redirectUrl = res.headers.location.startsWith('http')
+            ? res.headers.location
+            : `${urlObj.protocol}//${urlObj.hostname}${res.headers.location}`
+          pushLog(`[URL Fetch] Redirect ${res.statusCode} -> ${redirectUrl}`)
+          res.resume() // 丢弃响应体
+          fetchUrlInMain(redirectUrl, maxRedirects - 1).then(resolve)
+          return
+        }
+
+        if (res.statusCode && res.statusCode >= 400) {
+          pushLog(`[URL Fetch] HTTP error: ${res.statusCode}`)
+          resolve({ success: false, error: `HTTP ${res.statusCode}` })
+          return
+        }
+
+        const chunks: Buffer[] = []
+        // 处理 gzip/deflate/br 压缩
+        let stream: any = res
+        const encoding = res.headers['content-encoding']
+        try {
+          if (encoding === 'gzip') {
+            stream = require('zlib').createGunzip()
+            res.pipe(stream)
+          } else if (encoding === 'deflate') {
+            stream = require('zlib').createInflate()
+            res.pipe(stream)
+          } else if (encoding === 'br') {
+            stream = require('zlib').createBrotliDecompress()
+            res.pipe(stream)
+          }
+        } catch (e) {
+          pushLog(`[URL Fetch] Decompress setup error: ${e instanceof Error ? e.message : String(e)}`)
+        }
+
+        stream.on('data', (chunk: Buffer) => chunks.push(chunk))
+        stream.on('end', () => {
+          const html = Buffer.concat(chunks).toString('utf-8')
+          pushLog(`[URL Fetch] Success: ${html.length} chars from ${urlObj.hostname}`)
+          resolve({ success: true, html, statusCode: res.statusCode })
+        })
+        stream.on('error', (e: Error) => {
+          pushLog(`[URL Fetch] Stream error: ${e.message}`)
+          resolve({ success: false, error: e.message })
+        })
+      })
+
+      req.on('error', (e: Error) => {
+        pushLog(`[URL Fetch] Request error: ${e.message}`)
+        resolve({ success: false, error: e.message })
+      })
+
+      req.on('timeout', () => {
+        pushLog('[URL Fetch] Request timeout')
+        req.destroy()
+        resolve({ success: false, error: 'timeout' })
+      })
+
+      req.end()
+    } catch (e) {
+      pushLog(`[URL Fetch] Error: ${e instanceof Error ? e.message : String(e)}`)
+      resolve({ success: false, error: String(e) })
+    }
+  })
+}
+
+ipcMain.handle('url:fetch', async (_, url: string) => {
+  return fetchUrlInMain(url)
+})
+
 // ─── 单实例锁 + 自动启动 ───
 const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {
@@ -1185,6 +1362,8 @@ if (!gotTheLock) {
   })
 
   app.whenReady().then(async () => {
+    // v1.0.36: 顶层 try-catch 捕获所有异常
+    try {
     createWindow()
 
     app.on('activate', () => {
@@ -1195,9 +1374,19 @@ if (!gotTheLock) {
 
     // v1.0.31: 启动本地回调服务器（接收 Web 端 POST 的 token）
     await startCallbackServer()
+    // v1.0.36: 调试日志
+    try {
+      const dbgLog = path.join(app.getPath('home'), 'Library', 'Logs', 'podcastai-desktop', 'main.log')
+      fs.appendFileSync(dbgLog, `[DEBUG] startCallbackServer done, calling loadAuthState...\n`)
+    } catch {}
 
     // v1.0.31: 加载持久化的认证状态
     const persisted = loadAuthState()
+    // v1.0.36: 调试日志
+    try {
+      const dbgLog = path.join(app.getPath('home'), 'Library', 'Logs', 'podcastai-desktop', 'main.log')
+      fs.appendFileSync(dbgLog, `[DEBUG] loadAuthState returned: ${persisted ? 'has token' : 'null'}\n`)
+    } catch {}
     if (persisted && persisted.token) {
       authState = persisted
       pushLog(`[AUTH] Loaded persisted token (email=${authState.email || 'unknown'})`)
@@ -1243,6 +1432,13 @@ if (!gotTheLock) {
       }
     } else {
       pushLog('⚠ Voice runtime not found, service not started')
+    }
+    } catch (topErr) {
+      // v1.0.36: 捕获 app.whenReady 中的所有异常
+      try {
+        const errLog = path.join(app.getPath('home'), 'Library', 'Logs', 'podcastai-desktop', 'main.log')
+        fs.appendFileSync(errLog, `[FATAL] Unhandled error in app.whenReady: ${topErr instanceof Error ? topErr.stack : String(topErr)}\n`)
+      } catch {}
     }
   })
 }

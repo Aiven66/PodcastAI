@@ -21,6 +21,11 @@ const I18N = {
     serviceBusy: '合成中',
     serviceCheckFailed: '检测失败',
     serviceHint: '请启动本地 Python 语音服务 (默认端口 8907)',
+    // v1.0.38: 账号信息显示
+    currentAccount: '当前账号',
+    notLoggedIn: '未登录',
+    signOut: '退出登录',
+    switchAccount: '切换账号',
     podcastTitle: '播客生成',
     podcastSubtitle: '将链接、文本或文件转换为高质量播客',
     inputMethod: '输入方式',
@@ -253,6 +258,11 @@ const I18N = {
     serviceBusy: 'Busy',
     serviceCheckFailed: 'Failed',
     serviceHint: 'Please start the local Python voice service (default port 8907)',
+    // v1.0.38: account info display
+    currentAccount: 'Account',
+    notLoggedIn: 'Not signed in',
+    signOut: 'Sign out',
+    switchAccount: 'Switch account',
     podcastTitle: 'Generate Podcast',
     podcastSubtitle: 'Convert URLs, text, or files into high-quality podcasts',
     inputMethod: 'Input Method',
@@ -867,7 +877,7 @@ async function synthesizePodcast(script, cloneIds, podcastType, voice1, voice2, 
 // v1.0.23: 内置播客脚本生成算法（不依赖在线 API）
 // 参考 route.ts 的降级算法，增加元信息过滤和口语化重组
 function generatePodcastScriptLocal(content, podcastType) {
-  // 1) 噪声行过滤
+  // 1) 噪声行过滤（整行匹配，用于有换行的内容）
   const NOISE_LINE_PATTERNS = [
     /^你说的完全正确/, /^作者[：:]/, /^来源[：:]/, /^出处[：:]/, /^转自[：:]/,
     /^本文作者/, /^公众号/, /^微信公号/, /^商务合作/, /^投稿邮箱/, /^联系方式/,
@@ -890,57 +900,59 @@ function generatePodcastScriptLocal(content, podcastType) {
     [/扫码关注[^\n]*/g, ''], [/长按.*二维码[^\n]*/g, ''],
     [/[+＋]星标/g, ''], [/视频加载失败，?请刷新页面再试/g, ''],
     [/@[作作]者：?[^\n]*/g, ''], [/轻点两下取消(赞|在看)/g, ''],
+    // v1.0.41: 移除微信阅读器等噪声短语（不是整行，是片段）
+    [/在小说阅读器读本章/g, ''], [/在小说阅读器中沉浸阅读/g, ''], [/去阅读/g, ''],
   ]
 
-  // 3) 按段落处理
-  const paragraphs = content
-    .split('\n')
-    .map(p => p.trim())
-    .filter(p => {
-      if (p.length < 5) return false
-      for (const pattern of NOISE_LINE_PATTERNS) {
-        if (pattern.test(p)) return false
-      }
-      if (/^[\s\-=*_~`#>|+]+$/.test(p)) return false
-      return true
-    })
-    .map(p => {
-      let cleaned = p
-      for (const [pattern, replacement] of NOISE_FRAGMENT_PATTERNS) {
-        cleaned = cleaned.replace(pattern, replacement)
-      }
-      cleaned = cleaned.replace(/^#{1,6}\s*/, '')
-      cleaned = cleaned.replace(/\s+/g, ' ').replace(/[，,]\s*[，,]/g, '，').replace(/\.\.\.\s*。/g, '。').trim()
-      return cleaned
-    })
-    .filter(p => p.length >= 10)
-
-  // 4) 提取句子
-  const allSentences = []
-  for (const p of paragraphs) {
-    const sentences = p.split(/[。！？；]|[.!?](?=\s|$)/).map(s => s.trim()).filter(s => s.length >= 8)
-    allSentences.push(...sentences)
+  // v1.0.41: 关键修复 — URL 提取的内容通常是单行（所有换行被 \s+ 替换成空格）
+  // 旧逻辑用 content.split('\n') 按段落过滤噪声，但单行内容会被 NOISE_LINE_PATTERNS
+  // 整体拒绝（只要包含"在小说阅读器"等关键词，整个 15K 字内容全部被丢弃）
+  // 修复：先将噪声片段替换掉，再按句子（。！？）分割，最后按句子级过滤噪声
+  let cleanedContent = content
+  for (const [pattern, replacement] of NOISE_FRAGMENT_PATTERNS) {
+    cleanedContent = cleanedContent.replace(pattern, replacement)
   }
+  // 压缩多余空白
+  cleanedContent = cleanedContent.replace(/\s+/g, ' ').trim()
 
-  // 5) 去重
-  const seen = new Set()
+  // 3) 按句子分割（而不是按段落，因为 URL 内容可能没有换行）
+  const rawSentences = cleanedContent
+    .split(/[。！？；]|[.!?](?=\s|$)/)
+    .map(s => s.trim())
+    .filter(s => s.length >= 8)
+
+  // 4) 句子级噪声过滤
   const cleanSentences = []
-  for (const s of allSentences) {
+  const seen = new Set()
+  for (const s of rawSentences) {
+    // 跳过噪声句子
+    let isNoise = false
+    for (const pattern of NOISE_LINE_PATTERNS) {
+      if (pattern.test(s)) { isNoise = true; break }
+    }
+    if (isNoise) continue
+    if (/^[\s\-=*_~`#>|+]+$/.test(s)) continue
+    // 去重（前 20 字相同视为重复）
     const key = s.slice(0, 20)
-    if (!seen.has(key)) { seen.add(key); cleanSentences.push(s) }
+    if (seen.has(key)) continue
+    seen.add(key)
+    cleanSentences.push(s)
   }
 
-  // 6) 提取核心信息点（压缩到 55 字以内）
+  // 5) 提取核心信息点
+  // v1.0.42: 增加每条信息点长度（55→120字），保留更多细节，让播客内容更丰富
   const keyPoints = cleanSentences
     .map(s => {
-      if (s.length <= 55) return s
-      const cutPos = s.lastIndexOf('，', 50)
-      if (cutPos > 20) return s.slice(0, cutPos)
-      return s.slice(0, 50)
+      if (s.length <= 120) return s
+      const cutPos = s.lastIndexOf('，', 110)
+      if (cutPos > 30) return s.slice(0, cutPos)
+      return s.slice(0, 110)
     })
     .filter(s => s.length >= 10)
 
-  const maxScriptChars = podcastType === 'dual' ? 12000 : 8000
+  // v1.0.42: 增加脚本长度 — 旧值 8000/12000 字只生成约 20 分钟播客
+  // 新值 20000/30000 字可生成 40-60 分钟播客，与真实播客时长一致
+  const maxScriptChars = podcastType === 'dual' ? 30000 : 20000
 
   if (podcastType === 'dual') {
     // === 双人对话播客 ===
@@ -1076,32 +1088,70 @@ async function generatePodcastScriptOnline(content, podcastType) {
 }
 
 // v1.0.21: 从 HTML 中提取正文内容（支持微信公众号）
+// v1.0.39: 改进微信正文提取，使用栈匹配处理嵌套 div
 function extractMainContentFromHtml(html) {
-  // 1. 优先提取微信公众号正文容器
-  const weixinPatterns = [
-    /<div[^>]+id="js_content"[^>]*>([\s\S]*?)<\/div>\s*(?:<!--|<div[^>]+class="rich_media_tool")/i,
-    /<div[^>]+class="rich_media_content[^"]*"[^>]*>([\s\S]*?)<\/div>\s*(?:<!--|<div[^>]+class="rich_media_tool")/i,
-    /<div[^>]+id="js_content"[^>]*>([\s\S]*?)<\/div>/i,
-    /<div[^>]+class="rich_media_content[^"]*"[^>]*>([\s\S]*?)<\/div>/i,
+  // 1. 优先提取微信公众号正文容器（使用栈匹配处理嵌套 div）
+  const weixinSelectors = [
+    { id: 'js_content', label: 'js_content' },
+    { class: 'rich_media_content', label: 'rich_media_content' },
   ]
-  for (const pattern of weixinPatterns) {
-    const match = html.match(pattern)
-    if (match && match[1] && match[1].trim().length > 100) {
-      const text = match[1]
-        .replace(/<script[\s\S]*?<\/script>/gi, '')
-        .replace(/<style[\s\S]*?<\/style>/gi, '')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/&nbsp;/g, ' ')
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/\s+/g, ' ')
-        .trim()
-      if (text.length > 50) return text
+
+  for (const sel of weixinSelectors) {
+    // 找到起始标签位置
+    let startIdx = -1
+    if (sel.id) {
+      const re = new RegExp(`<div[^>]+id=["']${sel.id}["'][^>]*>`, 'i')
+      const m = html.match(re)
+      if (m) startIdx = m.index + m[0].length
+    } else if (sel.class) {
+      const re = new RegExp(`<div[^>]+class=["'][^"']*${sel.class}[^"']*["'][^>]*>`, 'i')
+      const m = html.match(re)
+      if (m) startIdx = m.index + m[0].length
     }
+    if (startIdx < 0) continue
+
+    // 从起始位置开始，用栈匹配找到对应的闭合 </div>
+    let depth = 1
+    let i = startIdx
+    const divOpenRe = /<div[^>]*>/gi
+    const divCloseRe = /<\/div>/gi
+    let endIdx = -1
+    while (i < html.length) {
+      divOpenRe.lastIndex = i
+      divCloseRe.lastIndex = i
+      const openMatch = divOpenRe.exec(html)
+      const closeMatch = divCloseRe.exec(html)
+      if (!closeMatch) break
+      if (openMatch && openMatch.index < closeMatch.index) {
+        depth++
+        i = openMatch.index + openMatch[0].length
+      } else {
+        depth--
+        i = closeMatch.index + closeMatch[0].length
+        if (depth === 0) {
+          endIdx = closeMatch.index
+          break
+        }
+      }
+    }
+    if (endIdx < 0) continue
+
+    const innerHtml = html.slice(startIdx, endIdx)
+    const text = innerHtml
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (text.length > 50) return text
   }
+
   // 2. 通用正文提取：移除 script/style/nav/header/footer，再去标签
   let cleaned = html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
@@ -1133,22 +1183,51 @@ function extractMainContentFromHtml(html) {
 }
 
 // 从 URL 提取内容
+// v1.0.39: 优先使用 Electron 主进程 IPC 代理抓取（绕过 CORS），降级到渲染进程 fetch
 async function fetchUrlContent(url) {
-  // v1.0.21: 直接抓取 + 本地正文提取（不依赖不存在的在线 extract-url 端点）
-  // 完整浏览器 UA，避免被微信公众号拦截
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-    },
-    signal: AbortSignal.timeout(15000),
-  })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  const html = await res.text()
+  let html = null
+  let lastError = null
+
+  // 方案1：通过 Electron 主进程 IPC 抓取（绕过 CORS，支持微信等网站）
+  if (window.podcastai?.url?.fetch) {
+    try {
+      const result = await window.podcastai.url.fetch(url)
+      if (result && result.success && result.html && result.html.length > 200) {
+        html = result.html
+      } else if (result && result.error) {
+        lastError = result.error
+      }
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e)
+    }
+  }
+
+  // 方案2：降级到渲染进程直接 fetch（某些环境可能不受 CORS 限制）
+  if (!html) {
+    try {
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+        },
+        signal: AbortSignal.timeout(15000),
+      })
+      if (res.ok) {
+        html = await res.text()
+      }
+    } catch (e) {
+      lastError = e instanceof Error ? e.message : String(e)
+    }
+  }
+
+  if (!html) {
+    throw new Error(`URL 抓取失败${lastError ? '：' + lastError : ''}`)
+  }
+
   const content = extractMainContentFromHtml(html)
   if (!content || content.length < 50) {
-    throw new Error('URL 内容提取失败：抓取到的页面无有效正文')
+    throw new Error('URL 内容提取失败：抓取到的页面无有效正文（可能是反爬页面或需要登录）')
   }
   return content
 }
@@ -1214,6 +1293,24 @@ function render() {
           <button onclick="setLocale('zh')" class="flex-1 py-1.5 text-xs rounded-md transition ${state.locale === 'zh' ? 'bg-primary-600 text-white' : 'text-stone-500 hover:text-primary-700'}">${t('chinese')}</button>
           <button onclick="setLocale('en')" class="flex-1 py-1.5 text-xs rounded-md transition ${state.locale === 'en' ? 'bg-primary-600 text-white' : 'text-stone-500 hover:text-primary-700'}">${t('english')}</button>
         </div>
+      </div>
+
+      <!-- v1.0.38: 当前登录账号信息 -->
+      <div class="p-4 border-t border-stone-200 app-no-drag mt-auto">
+        <div class="text-xs text-stone-400 mb-2">${t('currentAccount')}</div>
+        ${state.auth.isAuthenticated && (state.auth.email || state.auth.name)
+          ? `<div class="flex items-center gap-2 mb-2">
+              <div class="w-8 h-8 rounded-full bg-gradient-to-br from-primary-500 to-primary-700 flex items-center justify-center text-white text-xs font-semibold flex-shrink-0">
+                ${(state.auth.name || state.auth.email || '?').charAt(0).toUpperCase()}
+              </div>
+              <div class="flex-1 min-w-0">
+                ${state.auth.name ? `<div class="text-sm font-medium text-stone-900 truncate">${escapeHtml(state.auth.name)}</div>` : ''}
+                <div class="text-xs text-stone-500 truncate">${escapeHtml(state.auth.email || '')}</div>
+              </div>
+            </div>
+            <button onclick="desktopSignOut()" class="text-xs text-stone-500 hover:text-red-600 transition">${t('signOut')}</button>`
+          : `<div class="text-sm text-stone-400">${t('notLoggedIn')}</div>`
+        }
       </div>
     </aside>
 
@@ -2140,6 +2237,20 @@ window.setLocale = function(locale) {
   render()
 }
 
+// v1.0.38: 桌面客户端退出登录
+window.desktopSignOut = async function() {
+  try {
+    if (window.podcastai?.auth?.signOut) {
+      await window.podcastai.auth.signOut()
+    }
+  } catch (e) {
+    console.error('Sign out failed:', e)
+  }
+  state.auth = { isAuthenticated: false, token: null, email: null, name: null, userId: null }
+  render()
+  toast(state.locale === 'zh' ? '已退出登录' : 'Signed out', 'info')
+}
+
 window.setInputMethod = function(method) {
   state.inputMethod = method
   render()
@@ -2556,7 +2667,24 @@ window.previewClone = async function(cloneId) {
       URL.revokeObjectURL(url)
       render()
     }
-    state.previewAudio.play()
+    // v1.0.39: 添加 onerror 处理，捕获音频加载/播放失败
+    state.previewAudio.onerror = (e) => {
+      console.error('Preview audio error:', e)
+      state.previewLoadingId = null
+      state.previewPlayingId = null
+      URL.revokeObjectURL(url)
+      toast(state.locale === 'zh' ? '音频播放失败，请重试' : 'Audio playback failed, please retry', 'error')
+      render()
+    }
+    // v1.0.39: 捕获 play() Promise rejection（如自动播放策略阻止）
+    state.previewAudio.play().catch((playErr) => {
+      console.error('Preview play() rejected:', playErr)
+      state.previewLoadingId = null
+      state.previewPlayingId = null
+      URL.revokeObjectURL(url)
+      toast(state.locale === 'zh' ? '播放失败：' + (playErr.message || '未知错误') : 'Playback failed: ' + (playErr.message || 'unknown error'), 'error')
+      render()
+    })
     state.previewPlayingId = cloneId
     render()
   } catch (err) {

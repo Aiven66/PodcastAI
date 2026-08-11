@@ -102,6 +102,14 @@ contextBridge.exposeInMainWorld('podcastai', {
   },
 
   /**
+   * v1.0.39: URL 抓取（主进程代理，绕过 CORS）
+   * 微信公众号等网站不支持 CORS，渲染进程直接 fetch 会被拦截
+   */
+  url: {
+    fetch: (url: string) => ipcRenderer.invoke('url:fetch', url),
+  },
+
+  /**
    * v1.0.31: 认证系统
    * 桌面客户端与 Web 端登录校验打通
    */

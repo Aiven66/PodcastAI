@@ -1,6 +1,6 @@
 {
   "name": "podcastai-desktop",
-  "version": "1.0.34",
+  "version": "1.0.58",
   "description": "PodcastAI Desktop Client",
   "main": "dist/main.js",
   "scripts": {
@@ -55,7 +55,9 @@
         "CFBundleURLTypes": [
           {
             "CFBundleURLName": "com.podcastai.desktop",
-            "CFBundleURLSchemes": ["podcastai"]
+            "CFBundleURLSchemes": [
+              "podcastai"
+            ]
           }
         ]
       }

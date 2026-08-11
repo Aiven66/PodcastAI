@@ -17,36 +17,44 @@ interface ReleaseAsset {
   version?: string
 }
 
-// 客户端下载配置 - 指向 GitHub Release v1.0.6，内置 Python 运行时 + CosyVoice2 模型
-const GITHUB_RELEASE_BASE = 'https://github.com/Aiven66/PodcastAI/releases/download/v1.0.6'
+// 客户端下载配置 - 指向 GitHub Release v1.0.58，内置 Python 运行时 + CosyVoice2 模型
+const GITHUB_RELEASE_BASE = 'https://github.com/Aiven66/PodcastAI/releases/download/v1.0.58'
+const GITHUB_RELEASE_PAGE = 'https://github.com/Aiven66/PodcastAI/releases/tag/v1.0.58'
+
+// Mac arm64 DMG 超过 GitHub 2GB 限制，分 3 个分片上传
+const MAC_ARM64_PARTS = [
+  { name: 'part-aa', url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.58-arm64.dmg.part-aa`, size: '2.0 GB' },
+  { name: 'part-ab', url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.58-arm64.dmg.part-ab`, size: '2.0 GB' },
+  { name: 'part-ac', url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.58-arm64.dmg.part-ac`, size: '592 MB' },
+]
 
 const RELEASE_ASSETS: ReleaseAsset[] = [
-  // macOS Apple Silicon (M1/M2/M3/M4) - DMG 格式，内置 Python 运行时 + CosyVoice2 模型
+  // macOS Apple Silicon (M1/M2/M3/M4) - DMG 分 3 片上传，合并后安装
   {
-    name: 'PodcastAI-1.0.6-arm64.dmg',
+    name: 'PodcastAI-1.0.58-arm64.dmg',
     platform: 'mac',
     arch: 'arm64',
-    url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.6-arm64.dmg`,
-    size: '约 3.6 GB',
-    version: '1.0.6',
+    url: GITHUB_RELEASE_PAGE,
+    size: '约 4.5 GB（分 3 片）',
+    version: '1.0.58',
   },
   // macOS Intel (x64) - 暂未构建（后续版本支持）
   {
-    name: 'PodcastAI-1.0.6.dmg',
+    name: 'PodcastAI-1.0.58.dmg',
     platform: 'mac',
     arch: 'x64',
-    url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.6.dmg`,
-    size: '约 3.6 GB',
-    version: '1.0.6',
+    url: GITHUB_RELEASE_PAGE,
+    size: '暂未构建',
+    version: '1.0.58',
   },
   // Windows x64 - NSIS 安装包（后续版本支持）
   {
-    name: 'PodcastAI.Setup.1.0.6.exe',
+    name: 'PodcastAI.Setup.1.0.58.exe',
     platform: 'windows',
     arch: 'x64',
-    url: `${GITHUB_RELEASE_BASE}/PodcastAI.Setup.1.0.6.exe`,
-    size: '约 3.6 GB',
-    version: '1.0.6',
+    url: GITHUB_RELEASE_PAGE,
+    size: '暂未构建',
+    version: '1.0.58',
   },
 ]
 
@@ -139,7 +147,7 @@ export default function DownloadPage() {
                       </span>
                       <Badge variant="outline" className="text-xs">v{asset.version}</Badge>
                     </div>
-                    <p className="text-xs text-muted-foreground">{asset.size} · .zip</p>
+                    <p className="text-xs text-muted-foreground">{asset.size} · .dmg</p>
                   </div>
                   <Button
                     size="sm"
@@ -155,6 +163,27 @@ export default function DownloadPage() {
                   </Button>
                 </div>
               ))}
+              {/* Mac arm64 分片下载 */}
+              <div className="p-3 rounded-lg border border-primary/30 bg-primary/5 space-y-2">
+                <p className="text-xs font-medium text-primary">
+                  {t('Apple Silicon download (3 parts — download all, then combine in Terminal):',
+                     'Apple Silicon 下载（分 3 片 — 请全部下载后在终端合并）：')}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {MAC_ARM64_PARTS.map((part) => (
+                    <a key={part.name} href={part.url} target="_blank" rel="noopener noreferrer">
+                      <Button variant="outline" size="sm" type="button">
+                        <Download className="h-3 w-3 mr-1" />
+                        {part.name} ({part.size})
+                      </Button>
+                    </a>
+                  ))}
+                </div>
+                <div className="text-xs text-muted-foreground font-mono bg-muted/50 p-2 rounded">
+                  {t('Combine command (run in Terminal):', '合并命令（在终端执行）：')}<br/>
+                  cat PodcastAI-1.0.58-arm64.dmg.part-aa PodcastAI-1.0.58-arm64.dmg.part-ab PodcastAI-1.0.58-arm64.dmg.part-ac &gt; PodcastAI-1.0.58-arm64.dmg
+                </div>
+              </div>
             </CardContent>
           </Card>
 
