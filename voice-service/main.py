@@ -2007,9 +2007,14 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
         text = _preprocess_text_for_synthesis(text)
         if text != original_text:
             logger.info(f"Text preprocessed for {text_lang}: {len(original_text)} -> {len(text)} chars")
-        # v1.0.46: 清理合成文本中的口头禅和复读词
-        # 防止播客脚本中的"得了"、"可不"等口头禅被 CosyVoice2 放大复读
-        text = _clean_tts_text_for_synthesis(text)
+        # v1.0.59: 短文本（预览）跳过文本清理，保留完整模版文本
+        # v1.0.54 的 _clean_tts_text_for_synthesis 会删除"之前""之后"等词，
+        # 对预览模版"你好，很高兴认识你，这是我的声音预览"不影响，
+        # 但对播客文本会过度删除导致语义断裂
+        # v1.0.59: 由于 token 层重复检测已修复（只检测尾部连续循环 rounds>=3），
+        # 文本清理不再需要那么激进，改为只清理明确的口头禅重复
+        if len(text) > 25:  # 长文本才清理（播客），短文本（预览）跳过
+            text = _clean_tts_text_for_synthesis(text)
 
         # v1.0.50: 短文本保护 — 检测克隆预览文本
         # 克隆预览文本（如"你好，很高兴认识你，这是我的声音预览。"）通常只有 15 字左右
@@ -2535,6 +2540,16 @@ PREVIEW_TEXTS = {
 }
 
 
+def _get_audio_duration(audio_path: str) -> float:
+    """v1.0.59: 获取音频文件时长（秒），用于验证预览音频是否完整"""
+    try:
+        import soundfile as sf
+        info = sf.info(audio_path)
+        return float(info.duration)
+    except Exception:
+        return 0.0
+
+
 def _get_preview_text(ref_text: str = "") -> str:
     """根据参考文本语言返回对应的试听预览文本"""
     lang = _detect_language_from_text(ref_text)
@@ -2622,21 +2637,29 @@ async def create_clone(
     # 中文声音朗读中文，英文声音朗读英文，日韩同理
     preview_text = _get_preview_text(ref_text)
     detected_lang = _detect_language_from_text(ref_text)
-    # 截断 ref_text，使其长度与 preview_text 接近，避免 "too short" 警告导致性能下降
-    truncated_ref_text = ref_text[:max(len(preview_text) * 2, 20)] if ref_text else ""
-    logger.info(f"Generating preview audio during clone (lang={detected_lang}, text='{preview_text}', ref_text_len={len(truncated_ref_text)})...")
+    # v1.0.59: 不截断 ref_text，保留完整参考文本让模型更好地理解音色
+    # 之前截断到 34 字 + 清理口头禅会导致 ref_text 语义断裂，影响模型理解
+    logger.info(f"Generating preview audio during clone (lang={detected_lang}, text='{preview_text}')...")
     preview_ready = False
     try:
         preview_clone = dict(clone_data)
-        preview_clone["ref_text"] = truncated_ref_text
-        # v1.0.58: 预览音频仅使用 strict_clone=True（zero_shot），确保按模版朗读且音色一致
+        preview_clone["ref_text"] = ref_text  # v1.0.59: 使用完整 ref_text
+        # v1.0.59: 预览音频仅使用 strict_clone=True（zero_shot），确保按模版朗读且音色一致
         # 不回退 cross_lingual 或 Edge TTS：会导致音色不一致或未使用克隆声音
         preview_success = False
         for attempt in range(3):
             preview_success = synthesize_audio(preview_text, preview_cache_path, preview_clone, strict_clone=True)
+            # v1.0.59: 验证音频时长是否足够（预览文本至少需要 3 秒）
             if preview_success and os.path.exists(preview_cache_path) and os.path.getsize(preview_cache_path) > 1000:
-                break
-            logger.warning(f"Preview strict_clone attempt {attempt+1} failed, retrying...")
+                preview_duration = _get_audio_duration(preview_cache_path)
+                if preview_duration >= 3.0:
+                    logger.info(f"Preview audio OK: {os.path.getsize(preview_cache_path)} bytes, {preview_duration:.1f}s")
+                    break
+                else:
+                    logger.warning(f"Preview audio too short ({preview_duration:.1f}s < 3.0s), retrying... attempt {attempt+1}")
+                    preview_success = False
+            else:
+                logger.warning(f"Preview strict_clone attempt {attempt+1} failed, retrying...")
             time.sleep(1)
         if preview_success and os.path.exists(preview_cache_path) and os.path.getsize(preview_cache_path) > 1000:
             logger.info(f"Preview audio generated successfully: {os.path.getsize(preview_cache_path)} bytes")
@@ -2664,32 +2687,43 @@ def _generate_preview_background(clone_id: str):
         return
 
     cache_path = str(OUTPUT_DIR / f"clone_{clone_id}_preview.wav")
-    # 缓存已存在则跳过
+    # v1.0.59: 缓存已存在且时长足够则跳过，否则重新生成
     if os.path.exists(cache_path) and os.path.getsize(cache_path) > 1000:
-        with _preview_task_lock:
-            _preview_task_store[clone_id] = {"status": "done", "started_at": time.time()}
-        return
+        duration = _get_audio_duration(cache_path)
+        if duration >= 3.0:
+            with _preview_task_lock:
+                _preview_task_store[clone_id] = {"status": "done", "started_at": time.time()}
+            return
+        else:
+            logger.warning(f"[PreviewBG] Cached preview too short ({duration:.1f}s), regenerating...")
+            os.remove(cache_path)
 
     clone_name = clone.get("name", "克隆声音")
     ref_text = clone.get("ref_text", "")
     # v1.0.37: 根据参考音频语言自动选择试听文本
     preview_text = _get_preview_text(ref_text)
     detected_lang = _detect_language_from_text(ref_text)
-    truncated_ref_text = ref_text[:max(len(preview_text) * 2, 20)] if ref_text else ""
 
     preview_clone = dict(clone)
-    preview_clone["ref_text"] = truncated_ref_text
+    preview_clone["ref_text"] = ref_text  # v1.0.59: 使用完整 ref_text
 
     logger.info(f"[PreviewBG] Start generating preview for clone {clone_id} (lang={detected_lang}, text='{preview_text}')")
     try:
-        # v1.0.58: 预览音频仅使用 strict_clone=True（zero_shot），确保按模版朗读且音色一致
+        # v1.0.59: 预览音频仅使用 strict_clone=True（zero_shot），确保按模版朗读且音色一致
         # 不回退 cross_lingual 或 Edge TTS：会导致音色不一致或未使用克隆声音
         success = False
         for attempt in range(3):
             success = synthesize_audio(preview_text, cache_path, preview_clone, strict_clone=True)
+            # v1.0.59: 验证音频时长是否足够
             if success and os.path.exists(cache_path) and os.path.getsize(cache_path) > 1000:
-                break
-            logger.warning(f"[PreviewBG] strict_clone attempt {attempt+1} failed for clone {clone_id}, retrying...")
+                duration = _get_audio_duration(cache_path)
+                if duration >= 3.0:
+                    break
+                else:
+                    logger.warning(f"[PreviewBG] Preview too short ({duration:.1f}s), retrying... attempt {attempt+1}")
+                    success = False
+            else:
+                logger.warning(f"[PreviewBG] strict_clone attempt {attempt+1} failed for clone {clone_id}, retrying...")
             time.sleep(1)
 
         if success and os.path.exists(cache_path) and os.path.getsize(cache_path) > 1000:
@@ -2707,20 +2741,36 @@ def _generate_preview_background(clone_id: str):
 
 
 @app.get("/preview/{clone_id}")
-async def get_clone_preview(clone_id: str):
+async def get_clone_preview(clone_id: str, force: int = 0):
     clone = _clone_store.get(clone_id)
     if not clone:
         raise HTTPException(status_code=404, detail=f"Clone '{clone_id}' not found")
 
-    # 检查缓存 — 命中则直接返回音频（秒回）
     cache_path = str(OUTPUT_DIR / f"clone_{clone_id}_preview.wav")
+
+    # v1.0.59: force=1 时删除旧缓存，强制重新生成
+    if force == 1 and os.path.exists(cache_path):
+        logger.info(f"[Preview] Force regenerate for clone {clone_id}")
+        os.remove(cache_path)
+        with _preview_task_lock:
+            _preview_task_store.pop(clone_id, None)
+
+    # 检查缓存 — 命中且时长足够则直接返回音频（秒回）
     if os.path.exists(cache_path) and os.path.getsize(cache_path) > 1000:
-        return FileResponse(
-            cache_path,
-            media_type="audio/wav",
-            filename=f"{clone_id}_preview.wav",
-            headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"},
-        )
+        duration = _get_audio_duration(cache_path)
+        if duration >= 3.0:
+            return FileResponse(
+                cache_path,
+                media_type="audio/wav",
+                filename=f"{clone_id}_preview.wav",
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache", "Expires": "0"},
+            )
+        else:
+            # v1.0.59: 缓存音频太短，删除并重新生成
+            logger.warning(f"[Preview] Cached preview too short ({duration:.1f}s), regenerating...")
+            os.remove(cache_path)
+            with _preview_task_lock:
+                _preview_task_store.pop(clone_id, None)
 
     # 缓存未命中 — 检查是否已有后台生成任务
     with _preview_task_lock:
