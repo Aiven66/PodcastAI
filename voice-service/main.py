@@ -2007,14 +2007,13 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
         text = _preprocess_text_for_synthesis(text)
         if text != original_text:
             logger.info(f"Text preprocessed for {text_lang}: {len(original_text)} -> {len(text)} chars")
-        # v1.0.59: 短文本（预览）跳过文本清理，保留完整模版文本
-        # v1.0.54 的 _clean_tts_text_for_synthesis 会删除"之前""之后"等词，
-        # 对预览模版"你好，很高兴认识你，这是我的声音预览"不影响，
-        # 但对播客文本会过度删除导致语义断裂
-        # v1.0.59: 由于 token 层重复检测已修复（只检测尾部连续循环 rounds>=3），
-        # 文本清理不再需要那么激进，改为只清理明确的口头禅重复
-        if len(text) > 25:  # 长文本才清理（播客），短文本（预览）跳过
-            text = _clean_tts_text_for_synthesis(text)
+        # v1.0.60: 停用 _clean_tts_text_for_synthesis
+        # 根因分析：重复词来自 LLM 学习参考音频的 llm_prompt_speech_token，
+        #   不是来自 tts_text。清洗 tts_text 不能阻止 LLM 在声学层面生成口头禅。
+        # 而且 v1.0.54 的清洗会删除"以前""之后"等时间词，破坏句子语义。
+        # v1.0.60 改用 instruct2 模式后，LLM 不再学习参考音频的说话习惯，
+        #   不会产生重复词，文本清洗完全不需要了。
+        # text = _clean_tts_text_for_synthesis(text)  # v1.0.60: 停用
 
         # v1.0.50: 短文本保护 — 检测克隆预览文本
         # 克隆预览文本（如"你好，很高兴认识你，这是我的声音预览。"）通常只有 15 字左右
@@ -2031,6 +2030,13 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
             logger.info(f"English/mixed text detected, adjusting speed: {speed} -> {effective_speed}")
 
         if strict_clone:
+            # v1.0.60: 彻底解决重复词问题 — 改用 inference_instruct2 模式
+            # 根因：zero_shot 模式将参考音频的 llm_prompt_speech_token 传给 LLM，
+            #   LLM 从中学习并复制说话人的口头禅和说话节奏（间隔性语义重复）
+            #   _detect_repetition_pattern 和 ras_sampling 都无法检测这种重复
+            # 修复：instruct2 模式删除 llm_prompt_speech_token（LLM 看不到参考音频声学内容），
+            #   保留 flow_prompt_speech_token（Flow 模块仍能克隆音色），
+            #   用 instruct_text 替代 ref_text 作为 LLM 的 prompt_text
             if not ref_text or not ref_text.strip():
                 logger.warning(f"ref_text is empty for strict clone, running ASR to auto-extract...")
                 # 自动语言检测：不强制中文，让 Whisper 自行识别参考音频的语言
@@ -2047,20 +2053,14 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
                         logger.info(f"Saved ASR ref_text to clone {clone_id}")
                     except Exception as save_err:
                         logger.warning(f"Failed to save ASR ref_text: {save_err}")
-            logger.info(f"CosyVoice2 strict_clone: text_lang={text_lang}, text='{text[:40]}...', ref_text='{ref_text[:40]}...', ref_audio={ref_audio}, speed={effective_speed}")
-            # v1.0.42: 清理 ref_text 中的口头禅和复读词
-            # CosyVoice2 会模仿 ref_text 中的语言习惯，如果 ref_text 包含"可不"、"对吧"、
-            # "那个"、"就是" 等口头禅，合成结果会频繁复读这些词
-            ref_text = _clean_ref_text_for_synthesis(ref_text)
-            # 截断 ref_text 到 45 字以内（与参考音频时长匹配，避免性能严重下降）
-            # 注意：英文按字符数截断，中文按字符数截断（中英文都按 len 计算）
-            # 项目经验：ref_text 过长会导致 RTF 从 19 飙升到 41+
-            if len(ref_text) > 45:
-                original_ref_len = len(ref_text)
-                # v1.0.42: 按句子边界截断，避免截断在词中间导致异常
-                ref_text = _truncate_ref_text_by_sentence(ref_text, max_chars=45)
-                logger.info(f"ref_text truncated for performance: {original_ref_len} -> {len(ref_text)} chars")
-            # 截断参考音频到 8 秒以内（避免每次推理处理过多 prompt token，RTF 飙升）
+            # v1.0.60: 构造 instruct_text（指令文本），替代 ref_text 作为 LLM 的 prompt_text
+            # instruct_text 引导 LLM 用自然流畅的语气朗读，不会复制参考音频的说话习惯
+            if text_lang == 'en':
+                instruct_text = "Read in a natural and fluent tone."
+            else:
+                instruct_text = "用自然流畅的语气朗读。"
+            logger.info(f"v1.0.60 instruct2: text_lang={text_lang}, text='{text[:40]}...', instruct='{instruct_text}', ref_audio={ref_audio}, speed={effective_speed}")
+            # 截断参考音频到 8 秒（Flow 模块仍需要参考音频进行音色克隆）
             # 项目经验：29 秒参考音频 → RTF=72；8 秒参考音频 → RTF≈19
             ref_audio = _truncate_ref_audio(ref_audio, max_sec=8)
             # 使用推理锁，防止并发请求导致模型死锁
@@ -2073,20 +2073,20 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
                     pass
                 _cosyvoice_synth_lock.acquire(timeout=10)
             try:
-                # v1.0.55: text_frontend=False 防止 CosyVoice2 的 text_normalize 二次拆分文本
-                # 我们的代码已经做了文本清洗和分句，不需要 CosyVoice2 再拆
-                gen = _cosyvoice_model.inference_zero_shot(text, ref_text, ref_audio, '', speed=effective_speed, text_frontend=False)
+                # v1.0.60: instruct2 模式 — LLM 不接收 llm_prompt_speech_token，不会复制说话习惯
+                # text_frontend=False 防止 CosyVoice2 的 text_normalize 二次拆分文本
+                gen = _cosyvoice_model.inference_instruct2(text, instruct_text, ref_audio, '', speed=effective_speed, text_frontend=False)
             finally:
                 _cosyvoice_synth_lock.release()
         else:
-            # v1.0.56: 彻底解决重复词 — 使用 cross_lingual 模式
-            # 之前用 instruct2 / zero_shot 都会导致重复词（"得了""以前""当时"），
-            # 因为 LLM 会从参考音频的 speech_token 或 prompt_text 中学到发音模式。
-            # cross_lingual 完全删除 prompt_text 和 llm_prompt_speech_token，
-            # LLM 只根据输入文本生成，Flow 模块保留音色 → 不会产生重复词。
-            logger.info(f"v1.0.56 cross_lingual: text_lang={text_lang}, text='{text[:40]}...', ref_audio={ref_audio}, speed={effective_speed}")
+            # v1.0.60: 降级模式也改用 instruct2，保持一致性
+            logger.info(f"v1.0.60 instruct2 (fallback): text_lang={text_lang}, text='{text[:40]}...', ref_audio={ref_audio}, speed={effective_speed}")
             # 截断参考音频到 8 秒（性能优化）
             ref_audio = _truncate_ref_audio(ref_audio, max_sec=8)
+            if text_lang == 'en':
+                instruct_text = "Read in a natural and fluent tone."
+            else:
+                instruct_text = "用自然流畅的语气朗读。"
             if not _cosyvoice_synth_lock.acquire(timeout=300):
                 logger.error("CosyVoice2 synth lock timeout (300s), forcing release and retry")
                 try:
@@ -2095,8 +2095,7 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
                     pass
                 _cosyvoice_synth_lock.acquire(timeout=10)
             try:
-                # cross_lingual 只需要 tts_text + prompt_wav，不需要 prompt_text
-                gen = _cosyvoice_model.inference_cross_lingual(text, ref_audio, '', speed=effective_speed, text_frontend=False)
+                gen = _cosyvoice_model.inference_instruct2(text, instruct_text, ref_audio, '', speed=effective_speed, text_frontend=False)
             finally:
                 _cosyvoice_synth_lock.release()
 
@@ -3086,21 +3085,22 @@ async def synthesize_podcast(
                     sub_path = str(output_dir / f"seg_{seg_idx:03d}_part{ci:02d}.wav")
                     sub_success = False
 
-                    # v1.0.58: 修复音频截断问题 — zero_shot 优先，确保完整朗读文案
+                    # v1.0.60: 彻底解决重复词问题 — 使用 instruct2 模式
                     #
-                    # v1.0.57 的问题：cross_lingual 优先导致音频生成不完整（只输出几秒）
-                    #   cross_lingual 不使用 ref_text，LLM 缺少上下文，生成音频偏短
-                    # v1.0.58 修复：zero_shot 优先（完整朗读），cross_lingual 仅作回退
-                    #   token 层重复检测（model.py）仍在工作，可拦截复读词
-                    #   绝不用 Edge TTS — 混合音色比跳过片段更糟糕
+                    # 根因：zero_shot 模式将参考音频的 llm_prompt_speech_token 传给 LLM，
+                    #   LLM 从中学习并复制说话人的口头禅和说话节奏
+                    # 修复：strict_clone=True 现在调用 instruct2 模式（删除 llm_prompt_speech_token）
+                    #   LLM 只看到 instruct_text（"用自然流畅的语气朗读"），不会复制说话习惯
+                    #   Flow 模块仍保留 flow_prompt_speech_token，音色克隆正常
+                    # 绝不用 Edge TTS — 混合音色比跳过片段更糟糕
 
-                    # 第1次尝试：zero_shot（完整朗读文案，同音色）
+                    # 第1次尝试：instruct2（完整朗读文案，不复制说话习惯，同音色）
                     sub_success = synthesize_audio(text_chunk, sub_path, meta, strict_clone=True, speed=PODCAST_SPEED)
 
                     if not sub_success:
-                        logger.warning(f"v1.0.58: Segment {seg_idx} part {ci}: zero_shot failed, retrying with shorter text...")
+                        logger.warning(f"v1.0.60: Segment {seg_idx} part {ci}: instruct2 failed, retrying with shorter text...")
                         time.sleep(1)
-                        # 第2次尝试：缩短文本后重试 zero_shot
+                        # 第2次尝试：缩短文本后重试 instruct2
                         if len(text_chunk) > 15:
                             half = len(text_chunk) // 2
                             # 找最近的标点切分
@@ -3137,9 +3137,9 @@ async def synthesize_podcast(
                                         shutil.copy2(sub_path1, sub_path)
                                         os.remove(sub_path1)
                                     sub_success = True
-                                    logger.info(f"v1.0.58: Segment {seg_idx} part {ci}: retry succeeded with split text")
+                                    logger.info(f"v1.0.60: Segment {seg_idx} part {ci}: retry succeeded with split text")
                                 except Exception as merge_err:
-                                    logger.error(f"v1.0.58: merge failed: {merge_err}")
+                                    logger.error(f"v1.0.60: merge failed: {merge_err}")
                             else:
                                 # 清理失败的部分文件
                                 for sp in [sub_path1, sub_path2]:
@@ -3147,14 +3147,14 @@ async def synthesize_podcast(
                                         os.remove(sp)
 
                     if not sub_success:
-                        logger.warning(f"v1.0.58: Segment {seg_idx} part {ci}: zero_shot retry failed, falling back to cross_lingual (same voice, shorter audio)...")
+                        logger.warning(f"v1.0.60: Segment {seg_idx} part {ci}: instruct2 retry failed, final fallback to strict_clone=False...")
                         time.sleep(1)
-                        # 第3次尝试：cross_lingual（同音色，音频可能偏短，但绝不混合音色）
+                        # 第3次尝试：strict_clone=False（也是 instruct2 模式，作为最终降级）
                         sub_success = synthesize_audio(text_chunk, sub_path, meta, strict_clone=False, speed=PODCAST_SPEED)
 
                     if not sub_success:
-                        logger.error(f"v1.0.58: Segment {seg_idx} part {ci}: ALL CosyVoice2 modes failed! Skipping segment (better silent than mixed voice)")
-                        # v1.0.58: 绝不用 Edge TTS — 混合音色比跳过片段更糟糕
+                        logger.error(f"v1.0.60: Segment {seg_idx} part {ci}: ALL CosyVoice2 modes failed! Skipping segment (better silent than mixed voice)")
+                        # v1.0.60: 绝不用 Edge TTS — 混合音色比跳过片段更糟糕
                         all_chunks_success = False
                         continue
 
