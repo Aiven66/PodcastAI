@@ -1,6 +1,6 @@
 {
   "name": "podcastai-desktop",
-  "version": "1.0.60",
+  "version": "1.0.62",
   "description": "PodcastAI Desktop Client",
   "main": "dist/main.js",
   "scripts": {

@@ -1146,6 +1146,279 @@ def _transcribe_audio(audio_path: str, language: Optional[str] = None) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
+# v1.0.61: Whisper 闭环校验 — 彻底解决重复朗读/漏读问题
+# ═══════════════════════════════════════════════════════════════
+# 根因（v1.0.42~v1.0.60 全部失效的原因）：
+#   之前的防线全部是"猜测式"检测（文本清洗 / token 精确匹配 / 波形相似度 / 时长截断）：
+#   - token 精确匹配：语音 token 每次重复时声学上有细微差异，不完全相同 → 漏检
+#   - 波形余弦相似度：太严格检测不到重复，太宽松误伤正常音频 → v1.0.58 被迫禁用
+#   - 时长截断：盲目截断导致正常播客被截断 → v1.0.58 被迫禁用
+#   - instruct2 模式（v1.0.60）：去掉了参考音频影响，但 LLM 采样固有循环仍会产生复读
+#
+# v1.0.61 方案 — 语义级闭环校验（在音频写盘后）：
+#   1. 用本地 Whisper 转录刚生成的音频（快速配置：greedy + 不继承上文）
+#   2. 转录文本与脚本文案做模糊对齐（difflib SequenceMatcher）：
+#      a. 漏读（覆盖 < 85%）→ 判定失败 → 上层重试链拆分重合成
+#      b. 尾部复读/幻觉（文案已完整覆盖后仍有多余内容）→ 在覆盖完成的时间点精准裁剪
+#      c. 中间复读（相邻重复 n-gram 且原文无此重复）→ 判定失败 → 重试
+#      d. 正常 → 通过
+#   无论 LLM 幻觉模式如何变化，只要"读出来的内容"与"脚本"不一致就能被发现。
+
+# 校验开关（可用环境变量 VOICE_VERIFY=0 关闭，用于对比测试）
+_VERIFY_ENABLED = os.environ.get("VOICE_VERIFY", "1") != "0"
+
+
+def _norm_verify_text(text: str) -> str:
+    """校验用文本归一化：去标点/空白、转小写、繁转简"""
+    if not text:
+        return ""
+    t = re.sub(r'[，。！？；：、,.!?;:\s\'"\-—…·『』「」（）()【】\[\]<《》>*#+=@&|~`^\\/_]', '', text)
+    t = t.lower()
+    try:
+        import opencc
+        t = opencc.OpenCC('t2s').convert(t)
+    except Exception:
+        pass
+    return t
+
+
+def _transcribe_with_segments(audio_path: str, hint_lang: Optional[str] = None, max_seconds: float = 90.0):
+    """快速转录：返回 (完整文本, [{start, end, text}, ...])，失败返回 None
+
+    校验专用配置：
+      - beam_size=1（greedy）：速度优先，TTS 干净音频准确率足够
+      - condition_on_previous_text=False：防止 Whisper 自身的复读幻觉传播
+      - temperature=0：确定性输出
+    """
+    model = _get_whisper_model()
+    if model is None:
+        return None
+
+    import tempfile
+    temp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    temp_wav.close()
+    wav_path = temp_wav.name
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", audio_path, "-ar", "16000", "-ac", "1",
+             "-sample_fmt", "s16", "-t", str(int(max_seconds)), wav_path],
+            capture_output=True, text=True, timeout=60,
+        )
+    except Exception as e:
+        logger.warning(f"v1.0.61 verify: ffmpeg preprocess failed: {e}")
+        if os.path.exists(wav_path):
+            os.unlink(wav_path)
+        return None
+
+    try:
+        transcribe_kwargs = {
+            'fp16': False,
+            'beam_size': 1,
+            'best_of': 1,
+            'temperature': 0.0,
+            'condition_on_previous_text': False,
+            'compression_ratio_threshold': 2.4,
+            'no_speech_threshold': 0.6,
+            # v1.0.61: 词级时间戳 — 精准定位复读/幻觉内容的起止时间，用于精准裁剪
+            'word_timestamps': True,
+        }
+        if hint_lang == 'zh':
+            transcribe_kwargs['language'] = 'zh'
+            transcribe_kwargs['initial_prompt'] = "以下是普通话的句子。"
+        elif hint_lang == 'en':
+            transcribe_kwargs['language'] = 'en'
+
+        result = model.transcribe(wav_path, **transcribe_kwargs)
+        segments = []
+        for s in result.get('segments', []):
+            seg_start = float(s.get('start', 0.0))
+            seg_end = float(s.get('end', 0.0))
+            seg = {
+                'start': seg_start,
+                'end': seg_end,
+                'text': s.get('text', ''),
+                'words': [
+                    {'start': float(w.get('start', seg_start)),
+                     'end': float(w.get('end', seg_end)),
+                     'word': w.get('word', '')}
+                    for w in (s.get('words') or [])
+                ],
+            }
+            segments.append(seg)
+        text = result.get('text', '').strip()
+        return (text, segments)
+    except Exception as e:
+        logger.warning(f"v1.0.61 verify: whisper transcribe failed: {e}")
+        return None
+    finally:
+        if os.path.exists(wav_path):
+            os.unlink(wav_path)
+
+
+def _has_abnormal_repetition(t_stream: str, expected: str) -> bool:
+    """检测转录文本中的异常复读（相邻重复 n-gram）
+
+    只检测紧挨着的重复（[A][A] 或 [A][A][A]），且该重复模式在原文中不存在。
+    正常文本中的合法重复（如"很好很好"在原文里有）不会误判。
+    """
+    n = len(t_stream)
+    if n < 6:
+        return False
+    max_len = min(40, n // 2)
+    # v1.0.62: 从 L=2 开始检测 — 用户的复读词全是 2 字词（"得了""以前""当时"），
+    # L=3 起检会漏掉 "得了得了得了" 这种最高频的复读模式
+    for L in range(2, max_len + 1):
+        i = 0
+        while i + 2 * L <= n:
+            unit = t_stream[i:i + L]
+            if unit == t_stream[i + L:i + 2 * L]:
+                # 统计连续重复轮数
+                k = 2
+                while i + (k + 1) * L <= n and unit == t_stream[i + k * L:i + (k + 1) * L]:
+                    k += 1
+                # 原文中不存在这种翻倍模式 → 异常复读
+                if unit * 2 not in expected:
+                    logger.warning(
+                        f"v1.0.61 verify: abnormal repetition detected: "
+                        f"'{unit}' x{k} at pos {i} (not present in script)")
+                    return True
+                i += k * L
+            else:
+                i += 1
+    return False
+
+
+def _verify_and_fix_synthesis(output_path: str, text: str, speed: float = 1.15) -> bool:
+    """v1.0.61: Whisper 闭环校验 — 保证音频"一次不差"地朗读脚本文案
+
+    检测三类问题（词级时间戳精准定位）：
+      1. 漏读（覆盖 < 85%）→ 返回 False，上层重试链拆分重合成
+      2. 中间复读（相邻重复 n-gram 且原文无此重复）→ 返回 False，重试
+      3. 头部/尾部幻觉（instruct 指令被读出、复读、拖尾）→ 原地精准裁剪
+
+    Returns:
+        True  — 音频正常（或已原地裁剪掉头/尾多余内容）
+        False — 音频漏读/中间复读/异常，调用方应重试合成
+    """
+    if not _VERIFY_ENABLED:
+        return True
+
+    expected = _norm_verify_text(text)
+    if len(expected) < 4:
+        return True  # 文本太短（<4字），ASR 噪声大，跳过校验
+
+    hint = _detect_text_language(text)
+    result = _transcribe_with_segments(output_path, hint_lang=hint)
+    if result is None:
+        # Whisper 完全不可用 → 不阻塞合成（降级为无校验模式）
+        logger.warning("v1.0.61 verify: ASR unavailable, skipping verification (degraded mode)")
+        return True
+
+    full_text, segments = result
+    if not segments:
+        logger.warning("v1.0.61 verify: no speech segments detected, treating as failure")
+        return False
+
+    # 构建"归一化字符流 → (起始时间, 结束时间)"映射（词级，降级到段级）
+    char_times: list[tuple[float, float]] = []
+    char_list: list[str] = []
+    for seg in segments:
+        words = seg['words']
+        if words:
+            for w in words:
+                w_norm = _norm_verify_text(w['word'])
+                for _ in w_norm:
+                    char_times.append((w['start'], w['end']))
+                char_list.append(w_norm)
+        else:
+            seg_norm = _norm_verify_text(seg['text'])
+            for _ in seg_norm:
+                char_times.append((seg['start'], seg['end']))
+            char_list.append(seg_norm)
+    t_stream = ''.join(char_list)
+
+    if not t_stream:
+        logger.warning("v1.0.61 verify: transcription empty, treating as failure")
+        return False
+
+    import difflib
+    sm = difflib.SequenceMatcher(None, expected, t_stream, autojunk=False)
+    blocks = [b for b in sm.get_matching_blocks() if b.size > 0]
+    covered = sum(b.size for b in blocks)
+    coverage = covered / len(expected)
+    logger.info(
+        f"v1.0.61 verify: script={len(expected)}chars, transcript={len(t_stream)}chars, "
+        f"coverage={coverage:.1%}")
+
+    # ── 检查 1：漏读（覆盖不足）→ 失败重试 ──
+    if coverage < 0.85:
+        logger.warning(
+            f"v1.0.61 verify: INCOMPLETE synthesis (coverage={coverage:.1%} < 85%), "
+            f"script='{text[:40]}...', transcript='{t_stream[:40]}...' -> retry")
+        return False
+
+    # ── 检查 2：中间复读 → 失败重试（无法安全裁剪）──
+    if _has_abnormal_repetition(t_stream, expected):
+        return False
+
+    # ── 检查 3：头部/尾部幻觉 → 词级时间戳精准裁剪 ──
+    # 文案首个可靠匹配锚点（块长>=2，避免单字噪声误锚定）
+    anchor_blocks = [b for b in blocks if b.size >= 2] or blocks
+    first_block = min(anchor_blocks, key=lambda b: b.b)
+    head_extra = first_block.b  # 文案开始前，转录流里多出的字符数
+    head_tolerance = max(4, int(len(expected) * 0.10))
+    trim_start = 0.0
+    if head_extra > head_tolerance:
+        # 头部幻觉（典型：instruct 指令文本被读出，如"用自然流畅的语气朗读"）
+        trim_start = max(0.0, char_times[first_block.b][0] - 0.10)
+        logger.warning(
+            f"v1.0.61 verify: HEAD HALLUCINATION detected "
+            f"(extra={head_extra}chars > tolerance={head_tolerance}), "
+            f"content='{t_stream[:first_block.b]}', trimming start to {trim_start:.2f}s")
+
+    # 文案完整覆盖后，转录流中多余的部分 = 尾部复读或幻觉内容
+    coverage_end = max((b.b + b.size) for b in blocks) if blocks else 0
+    tail_extra = len(t_stream) - coverage_end
+    tail_tolerance = max(8, int(len(expected) * 0.15))  # 容忍 ASR 末尾噪声
+    data, sr = sf.read(output_path)
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+    total_dur = len(data) / sr
+    trim_end = total_dur
+    if tail_extra > tail_tolerance:
+        last_idx = min(coverage_end, len(char_times)) - 1
+        trim_end = char_times[last_idx][1] + 0.05
+        logger.warning(
+            f"v1.0.61 verify: TAIL REPETITION/HALLUCINATION detected "
+            f"(extra={tail_extra}chars > tolerance={tail_tolerance}), "
+            f"content='{t_stream[coverage_end:]}', trimming end to {trim_end:.2f}s")
+
+    # ── 执行裁剪（头部或尾部任一需要）──
+    if trim_start > 0.0 or trim_end < total_dur:
+        expected_dur = max(len(expected) / (3.5 * max(speed, 0.5)), 1.0)
+        new_dur = trim_end - trim_start
+        if new_dur < expected_dur * 0.4 or new_dur <= 0:
+            # 裁剪后时长异常（裁掉太多）→ 失败重试
+            logger.warning(
+                f"v1.0.61 verify: trim result abnormal (kept={new_dur:.1f}s, "
+                f"expected_min={expected_dur * 0.4:.1f}s) -> retry")
+            return False
+        start_sample = int(trim_start * sr)
+        end_sample = min(int(trim_end * sr), len(data))
+        trimmed = data[start_sample:end_sample].copy()
+        # 首尾淡入淡出 10ms，避免裁剪爆音
+        fade = min(int(0.01 * sr), len(trimmed) // 4)
+        if fade > 0:
+            trimmed[:fade] *= np.linspace(0, 1, fade)
+            trimmed[-fade:] *= np.linspace(1, 0, fade)
+        sf.write(output_path, trimmed.astype(np.float32), sr, subtype='PCM_16')
+        logger.info(
+            f"v1.0.61 verify: trimmed audio {total_dur:.2f}s -> {new_dur:.2f}s "
+            f"(head={trim_start:.2f}s, tail={total_dur - trim_end:.2f}s removed)")
+    return True
+
+
+# ═══════════════════════════════════════════════════════════════
 # Fish Speech — 业内领先的声音克隆引擎（最高优先级）
 # ═══════════════════════════════════════════════════════════════
 
@@ -2053,13 +2326,16 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
                         logger.info(f"Saved ASR ref_text to clone {clone_id}")
                     except Exception as save_err:
                         logger.warning(f"Failed to save ASR ref_text: {save_err}")
-            # v1.0.60: 构造 instruct_text（指令文本），替代 ref_text 作为 LLM 的 prompt_text
+            # v1.0.62: 构造 instruct_text（指令文本），替代 ref_text 作为 LLM 的 prompt_text
             # instruct_text 引导 LLM 用自然流畅的语气朗读，不会复制参考音频的说话习惯
+            # v1.0.62 关键修复：追加官方要求的 <|endofprompt|> 分隔符。
+            #   缺失该分隔符时，LLM 无法区分"指令"和"待朗读文案"，会把指令
+            #   （"用自然流畅的语气朗读"）也朗读出来（v1.0.61 日志中的 HEAD HALLUCINATION 根因）。
             if text_lang == 'en':
-                instruct_text = "Read in a natural and fluent tone."
+                instruct_text = "Read in a natural and fluent tone.<|endofprompt|>"
             else:
-                instruct_text = "用自然流畅的语气朗读。"
-            logger.info(f"v1.0.60 instruct2: text_lang={text_lang}, text='{text[:40]}...', instruct='{instruct_text}', ref_audio={ref_audio}, speed={effective_speed}")
+                instruct_text = "用自然流畅的语气朗读。<|endofprompt|>"
+            logger.info(f"v1.0.62 instruct2: text_lang={text_lang}, text='{text[:40]}...', instruct='{instruct_text}', ref_audio={ref_audio}, speed={effective_speed}")
             # 截断参考音频到 8 秒（Flow 模块仍需要参考音频进行音色克隆）
             # 项目经验：29 秒参考音频 → RTF=72；8 秒参考音频 → RTF≈19
             ref_audio = _truncate_ref_audio(ref_audio, max_sec=8)
@@ -2083,10 +2359,11 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
             logger.info(f"v1.0.60 instruct2 (fallback): text_lang={text_lang}, text='{text[:40]}...', ref_audio={ref_audio}, speed={effective_speed}")
             # 截断参考音频到 8 秒（性能优化）
             ref_audio = _truncate_ref_audio(ref_audio, max_sec=8)
+            # v1.0.62: 降级模式同样追加 <|endofprompt|> 分隔符，防止指令被朗读出来
             if text_lang == 'en':
-                instruct_text = "Read in a natural and fluent tone."
+                instruct_text = "Read in a natural and fluent tone.<|endofprompt|>"
             else:
-                instruct_text = "用自然流畅的语气朗读。"
+                instruct_text = "用自然流畅的语气朗读。<|endofprompt|>"
             if not _cosyvoice_synth_lock.acquire(timeout=300):
                 logger.error("CosyVoice2 synth lock timeout (300s), forcing release and retry")
                 try:
@@ -2135,6 +2412,10 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
             #                f"({(original_audio_len - len(audio_data)) / target_sr:.2f}s) due to repetition/duration")
             sf.write(output_path, audio_data.astype(np.float32), target_sr, subtype='PCM_16')
             logger.info(f"CosyVoice2 synthesis OK: peak={peak:.4f}, rms={rms:.4f}, duration={len(audio_data)/target_sr:.2f}s")
+            # v1.0.61: Whisper 闭环校验 — 拦截复读/漏读（校验失败返回 False 触发上层重试链）
+            if not _verify_and_fix_synthesis(output_path, text, effective_speed):
+                logger.warning("v1.0.61: verification FAILED (repetition/incomplete), treating as synthesis failure")
+                return False
             return True
         return False
     except Exception as e:
