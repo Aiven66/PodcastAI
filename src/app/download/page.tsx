@@ -17,44 +17,44 @@ interface ReleaseAsset {
   version?: string
 }
 
-// 客户端下载配置 - 指向 GitHub Release v1.0.62，内置 Python 运行时 + CosyVoice2 模型
-const GITHUB_RELEASE_BASE = 'https://github.com/Aiven66/PodcastAI/releases/download/v1.0.62'
-const GITHUB_RELEASE_PAGE = 'https://github.com/Aiven66/PodcastAI/releases/tag/v1.0.62'
+// 客户端下载配置 - 指向 GitHub Release v1.0.63，内置 Python 运行时 + CosyVoice2 模型
+const GITHUB_RELEASE_BASE = 'https://github.com/Aiven66/PodcastAI/releases/download/v1.0.63'
+const GITHUB_RELEASE_PAGE = 'https://github.com/Aiven66/PodcastAI/releases/tag/v1.0.63'
 
 // Mac arm64 DMG 超过 GitHub 2GB 限制，分 3 个分片上传
 const MAC_ARM64_PARTS = [
-  { name: 'part-aa', url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.62-arm64.dmg.part-aa`, size: '2.0 GB' },
-  { name: 'part-ab', url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.62-arm64.dmg.part-ab`, size: '2.0 GB' },
-  { name: 'part-ac', url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.62-arm64.dmg.part-ac`, size: '592 MB' },
+  { name: 'part-aa', url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.63-arm64.dmg.part-aa`, size: '2.0 GB' },
+  { name: 'part-ab', url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.63-arm64.dmg.part-ab`, size: '2.0 GB' },
+  { name: 'part-ac', url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.63-arm64.dmg.part-ac`, size: '592 MB' },
 ]
 
 const RELEASE_ASSETS: ReleaseAsset[] = [
   // macOS Apple Silicon (M1/M2/M3/M4) - DMG 分 3 片上传，合并后安装
   {
-    name: 'PodcastAI-1.0.62-arm64.dmg',
+    name: 'PodcastAI-1.0.63-arm64.dmg',
     platform: 'mac',
     arch: 'arm64',
     url: GITHUB_RELEASE_PAGE,
     size: '约 4.5 GB（分 3 片）',
-    version: '1.0.62',
+    version: '1.0.63',
   },
   // macOS Intel (x64) - 暂未构建（后续版本支持）
   {
-    name: 'PodcastAI-1.0.62.dmg',
+    name: 'PodcastAI-1.0.63.dmg',
     platform: 'mac',
     arch: 'x64',
     url: GITHUB_RELEASE_PAGE,
     size: '暂未构建',
-    version: '1.0.62',
+    version: '1.0.63',
   },
   // Windows x64 - NSIS 安装包（后续版本支持）
   {
-    name: 'PodcastAI.Setup.1.0.62.exe',
+    name: 'PodcastAI.Setup.1.0.63.exe',
     platform: 'windows',
     arch: 'x64',
     url: GITHUB_RELEASE_PAGE,
     size: '暂未构建',
-    version: '1.0.62',
+    version: '1.0.63',
   },
 ]
 
@@ -181,7 +181,7 @@ export default function DownloadPage() {
                 </div>
                 <div className="text-xs text-muted-foreground font-mono bg-muted/50 p-2 rounded">
                   {t('Combine command (run in Terminal):', '合并命令（在终端执行）：')}<br/>
-                  cat PodcastAI-1.0.62-arm64.dmg.part-aa PodcastAI-1.0.62-arm64.dmg.part-ab PodcastAI-1.0.62-arm64.dmg.part-ac &gt; PodcastAI-1.0.62-arm64.dmg
+                  cat PodcastAI-1.0.63-arm64.dmg.part-aa PodcastAI-1.0.63-arm64.dmg.part-ab PodcastAI-1.0.63-arm64.dmg.part-ac &gt; PodcastAI-1.0.63-arm64.dmg
                 </div>
               </div>
             </CardContent>
@@ -253,13 +253,13 @@ export default function DownloadPage() {
           </Card>
         </div>
 
-        {/* What's New in v1.0.62 */}
+        {/* What's New in v1.0.63 */}
         <Card className="mb-10 border-primary/40 bg-primary/5">
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
                 <CardTitle className="flex items-center gap-2">
-                  <Badge variant="default">v1.0.62</Badge>
+                  <Badge variant="default">v1.0.63</Badge>
                   {t('What\'s New', '最新更新')}
                 </CardTitle>
                 <CardDescription className="mt-1">

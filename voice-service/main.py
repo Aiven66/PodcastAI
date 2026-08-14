@@ -1969,6 +1969,57 @@ def _truncate_ref_audio(ref_audio_path: str, max_sec: float = 8.0) -> str:
 # v1.0.46: 常见口头禅和复读词列表（大幅扩展）
 # CosyVoice2 会模仿 ref_text 中的语言习惯，这些词如果出现在 ref_text 中，
 # 合成结果会频繁复读，导致播客音频中反复出现"得了"、"可不"、"对吧"等无意义词语
+
+
+def _get_aligned_ref_text(clone_id: Optional[str], truncated_audio_path: str, full_ref_text: str, audio_duration: float = 0.0) -> str:
+    """v1.0.63: 获取与截断后参考音频严格对齐的 ref_text
+
+    zero_shot 模式要求 prompt_text 是 prompt_wav 的准确转录（文本-音频对齐）。
+    full_ref_text 是完整音频的转录，而合成用的是 8 秒截断音频 —
+    两者不匹配会让 LLM 困惑，导致音色失真、韵律漂移（"声音听起来不像原声"的根因之一）。
+
+    策略：
+      1. 音频未截断（<=8s）→ full_ref_text 本身就对齐，直接返回
+      2. 命中 clone 元数据缓存（ref_text_aligned）→ 直接返回
+      3. 对截断音频做 Whisper ASR → 得到对齐文本 → 写入缓存（克隆不可变，缓存安全）
+      4. ASR 失败 → 按时长比例截断 full_ref_text（保底对齐）
+    """
+    # 音频本来就没超过 8 秒：完整转录就是对齐的
+    if audio_duration > 0 and audio_duration <= 8.5:
+        return full_ref_text
+
+    # 命中缓存
+    if clone_id and clone_id in _clone_store:
+        cached = _clone_store[clone_id].get("ref_text_aligned")
+        if cached and cached.strip():
+            return cached
+
+    # ASR 转录截断后的音频（8 秒音频转录很快）
+    try:
+        aligned = _transcribe_audio(truncated_audio_path, language=None)
+        if aligned and len(aligned.strip()) >= 4:
+            aligned = aligned.strip()
+            if clone_id and clone_id in _clone_store:
+                try:
+                    _clone_store[clone_id]["ref_text_aligned"] = aligned
+                    _save_clones()
+                except Exception as cache_err:
+                    logger.warning(f"v1.0.63: cache aligned ref_text failed: {cache_err}")
+            logger.info(f"v1.0.63: aligned ref_text via ASR ({len(aligned)} chars): '{aligned[:50]}'")
+            return aligned
+        logger.warning(f"v1.0.63: aligned ASR too short: '{aligned}'")
+    except Exception as e:
+        logger.warning(f"v1.0.63: aligned ref_text ASR failed: {e}")
+
+    # 保底：按时长比例截断 full_ref_text（8s / 完整时长 ≈ 文本保留比例）
+    if full_ref_text and audio_duration > 8.5:
+        ratio = 8.0 / audio_duration
+        keep_chars = max(10, int(len(full_ref_text) * ratio))
+        truncated = _truncate_ref_text_by_sentence(full_ref_text, max_chars=keep_chars)
+        if truncated and truncated.strip():
+            logger.info(f"v1.0.63: aligned ref_text via proportional truncation ({len(truncated)} chars): '{truncated[:50]}'")
+            return truncated
+    return full_ref_text
 # v1.0.42 仅覆盖 15 个 pattern，"得了"等漏网导致 v1.0.45 仍出现复读
 # v1.0.46 扩展到 40+ pattern，覆盖所有常见中文口头禅/语气词
 _FILLER_WORDS_PATTERNS = [
@@ -2303,13 +2354,17 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
             logger.info(f"English/mixed text detected, adjusting speed: {speed} -> {effective_speed}")
 
         if strict_clone:
-            # v1.0.60: 彻底解决重复词问题 — 改用 inference_instruct2 模式
-            # 根因：zero_shot 模式将参考音频的 llm_prompt_speech_token 传给 LLM，
-            #   LLM 从中学习并复制说话人的口头禅和说话节奏（间隔性语义重复）
-            #   _detect_repetition_pattern 和 ras_sampling 都无法检测这种重复
-            # 修复：instruct2 模式删除 llm_prompt_speech_token（LLM 看不到参考音频声学内容），
-            #   保留 flow_prompt_speech_token（Flow 模块仍能克隆音色），
-            #   用 instruct_text 替代 ref_text 作为 LLM 的 prompt_text
+            # v1.0.63: 回归 zero_shot 模式 — 恢复音色相似度（解决"声音贱贱的、不像原声"）
+            #
+            # 模式对比（关键权衡）：
+            #   zero_shot:  LLM 接收参考音频 speech_token → 完整复制音色+韵律+说话风格
+            #               → 声音自然、接近原声；但可能复制口头禅（重复词风险）
+            #   instruct2:  LLM 不接收参考音频 → 韵律语气由模型自己"猜"
+            #               → 声音听起来贱贱的/不自然、与原声差别大（v1.0.60 用户反馈）
+            #
+            # v1.0.63 方案：zero_shot 优先（音色优先），重复词交给 v1.0.61/62 的
+            #   Whisper 闭环校验拦截（校验失败 → 返回 False → 上层换采样重试）。
+            #   instruct2 仅作为校验多次失败后的最终降级（strict_clone=False 分支）。
             if not ref_text or not ref_text.strip():
                 logger.warning(f"ref_text is empty for strict clone, running ASR to auto-extract...")
                 # 自动语言检测：不强制中文，让 Whisper 自行识别参考音频的语言
@@ -2326,19 +2381,13 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
                         logger.info(f"Saved ASR ref_text to clone {clone_id}")
                     except Exception as save_err:
                         logger.warning(f"Failed to save ASR ref_text: {save_err}")
-            # v1.0.62: 构造 instruct_text（指令文本），替代 ref_text 作为 LLM 的 prompt_text
-            # instruct_text 引导 LLM 用自然流畅的语气朗读，不会复制参考音频的说话习惯
-            # v1.0.62 关键修复：追加官方要求的 <|endofprompt|> 分隔符。
-            #   缺失该分隔符时，LLM 无法区分"指令"和"待朗读文案"，会把指令
-            #   （"用自然流畅的语气朗读"）也朗读出来（v1.0.61 日志中的 HEAD HALLUCINATION 根因）。
-            if text_lang == 'en':
-                instruct_text = "Read in a natural and fluent tone.<|endofprompt|>"
-            else:
-                instruct_text = "用自然流畅的语气朗读。<|endofprompt|>"
-            logger.info(f"v1.0.62 instruct2: text_lang={text_lang}, text='{text[:40]}...', instruct='{instruct_text}', ref_audio={ref_audio}, speed={effective_speed}")
-            # 截断参考音频到 8 秒（Flow 模块仍需要参考音频进行音色克隆）
-            # 项目经验：29 秒参考音频 → RTF=72；8 秒参考音频 → RTF≈19
+            # 截断参考音频到 8 秒（性能：8s 参考 → RTF≈19；29s → RTF=72）
+            full_audio_duration = _get_audio_duration(ref_audio)
             ref_audio = _truncate_ref_audio(ref_audio, max_sec=8)
+            # v1.0.63 关键：获取与截断音频严格对齐的 ref_text（不清洗！清洗会破坏文本-音频对齐）
+            # 对齐的 prompt_text 让 LLM 精准理解参考音频内容 → 音色还原度大幅提升
+            aligned_ref_text = _get_aligned_ref_text(clone_id, ref_audio, ref_text, full_audio_duration)
+            logger.info(f"v1.0.63 zero_shot: text_lang={text_lang}, text='{text[:40]}...', ref_text='{aligned_ref_text[:40]}...', ref_audio={ref_audio}, speed={effective_speed}")
             # 使用推理锁，防止并发请求导致模型死锁
             # 超时 300 秒：如果锁被持有超过 5 分钟，说明前一个请求卡住了，强制获取
             if not _cosyvoice_synth_lock.acquire(timeout=300):
@@ -2349,9 +2398,10 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
                     pass
                 _cosyvoice_synth_lock.acquire(timeout=10)
             try:
-                # v1.0.60: instruct2 模式 — LLM 不接收 llm_prompt_speech_token，不会复制说话习惯
+                # v1.0.63: zero_shot 模式 — 音色/韵律/说话风格完整复制自参考音频
+                # 重复词风险由 _verify_and_fix_synthesis（Whisper 闭环校验）拦截
                 # text_frontend=False 防止 CosyVoice2 的 text_normalize 二次拆分文本
-                gen = _cosyvoice_model.inference_instruct2(text, instruct_text, ref_audio, '', speed=effective_speed, text_frontend=False)
+                gen = _cosyvoice_model.inference_zero_shot(text, aligned_ref_text, ref_audio, '', speed=effective_speed, text_frontend=False)
             finally:
                 _cosyvoice_synth_lock.release()
         else:
@@ -2790,21 +2840,26 @@ def _detect_language_from_text(text: str) -> str:
     """
     v1.0.37: 根据文本内容检测语言，用于选择克隆试听预览文本的语言。
     返回语言代码：zh/en/ja/ko/other。
+
+    v1.0.63 修复：假名/谚文是日语/韩语的判别特征（中文文本不含假名和谚文），
+    必须优先于汉字判断 — 否则汉字多的日语句子会被误判为中文，
+    导致日语声音克隆试听时朗读了中文模版。
     """
     if not text or not text.strip():
         return "zh"  # 默认中文
     # 统计各语言字符数量
-    chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
+    chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))  # 汉字（中文/日语共用）
     japanese_chars = len(re.findall(r'[\u3040-\u309f\u30a0-\u30ff]', text))  # 平假名+片假名
-    korean_chars = len(re.findall(r'[\uac00-\ud7af]', text))
+    korean_chars = len(re.findall(r'[\uac00-\ud7af]', text))  # 谚文
     latin_chars = len(re.findall(r'[a-zA-Z]', text))
-    # 优先级：中文 > 日文 > 韩文 > 英文
-    if chinese_chars > 0 and chinese_chars >= japanese_chars:
-        return "zh"
+    # 优先级：日文（假名）> 韩文（谚文）> 中文（汉字）> 英文
+    # 假名/谚文出现即判定日/韩（中文不含这两类字符）；纯汉字才判定中文
     if japanese_chars > 0:
         return "ja"
     if korean_chars > 0:
         return "ko"
+    if chinese_chars > 0:
+        return "zh"
     if latin_chars > 0:
         return "en"
     return "zh"  # 默认中文
@@ -3366,22 +3421,28 @@ async def synthesize_podcast(
                     sub_path = str(output_dir / f"seg_{seg_idx:03d}_part{ci:02d}.wav")
                     sub_success = False
 
-                    # v1.0.60: 彻底解决重复词问题 — 使用 instruct2 模式
+                    # v1.0.63: zero_shot 优先 + Whisper 闭环校验 — 音色与内容双保障
                     #
-                    # 根因：zero_shot 模式将参考音频的 llm_prompt_speech_token 传给 LLM，
-                    #   LLM 从中学习并复制说话人的口头禅和说话节奏
-                    # 修复：strict_clone=True 现在调用 instruct2 模式（删除 llm_prompt_speech_token）
-                    #   LLM 只看到 instruct_text（"用自然流畅的语气朗读"），不会复制说话习惯
-                    #   Flow 模块仍保留 flow_prompt_speech_token，音色克隆正常
+                    # strict_clone=True = zero_shot 模式：音色/韵律/说话风格完整复制自参考音频
+                    #   （v1.0.60 的 instruct2 虽无重复词，但韵律由模型自己猜，声音不像原声）
+                    # 重复词防线：_verify_and_fix_synthesis（Whisper 语义级闭环校验）
+                    #   漏读/复读 → 返回 False → 本重试链换采样重试 → 拆分重试 → instruct2 兜底
                     # 绝不用 Edge TTS — 混合音色比跳过片段更糟糕
 
-                    # 第1次尝试：instruct2（完整朗读文案，不复制说话习惯，同音色）
+                    # 第1次尝试：zero_shot（音色/韵律最接近原声；重复词由 Whisper 闭环校验拦截）
                     sub_success = synthesize_audio(text_chunk, sub_path, meta, strict_clone=True, speed=PODCAST_SPEED)
 
                     if not sub_success:
-                        logger.warning(f"v1.0.60: Segment {seg_idx} part {ci}: instruct2 failed, retrying with shorter text...")
+                        # 第1.5次尝试：zero_shot 同模式重试（LLM 采样是随机的，重试大概率换出正常音频）
+                        # 校验失败多为偶发复读，直接重试比降级 instruct2 更能保持全片音色一致
+                        logger.warning(f"v1.0.63: Segment {seg_idx} part {ci}: zero_shot attempt 1 failed (verify/rep), plain retry with new sampling...")
                         time.sleep(1)
-                        # 第2次尝试：缩短文本后重试 instruct2
+                        sub_success = synthesize_audio(text_chunk, sub_path, meta, strict_clone=True, speed=PODCAST_SPEED)
+
+                    if not sub_success:
+                        logger.warning(f"v1.0.63: Segment {seg_idx} part {ci}: zero_shot retry failed, trying split text...")
+                        time.sleep(1)
+                        # 第2次尝试：缩短文本后重试 zero_shot
                         if len(text_chunk) > 15:
                             half = len(text_chunk) // 2
                             # 找最近的标点切分
@@ -3418,9 +3479,9 @@ async def synthesize_podcast(
                                         shutil.copy2(sub_path1, sub_path)
                                         os.remove(sub_path1)
                                     sub_success = True
-                                    logger.info(f"v1.0.60: Segment {seg_idx} part {ci}: retry succeeded with split text")
+                                    logger.info(f"v1.0.63: Segment {seg_idx} part {ci}: retry succeeded with split text")
                                 except Exception as merge_err:
-                                    logger.error(f"v1.0.60: merge failed: {merge_err}")
+                                    logger.error(f"v1.0.63: merge failed: {merge_err}")
                             else:
                                 # 清理失败的部分文件
                                 for sp in [sub_path1, sub_path2]:
@@ -3428,9 +3489,9 @@ async def synthesize_podcast(
                                         os.remove(sp)
 
                     if not sub_success:
-                        logger.warning(f"v1.0.60: Segment {seg_idx} part {ci}: instruct2 retry failed, final fallback to strict_clone=False...")
+                        logger.warning(f"v1.0.63: Segment {seg_idx} part {ci}: zero_shot all retries failed, final fallback to instruct2 (same timbre, model-generated prosody)...")
                         time.sleep(1)
-                        # 第3次尝试：strict_clone=False（也是 instruct2 模式，作为最终降级）
+                        # 第4次尝试：instruct2 兜底（音色仍由 Flow 克隆，仅韵律由模型生成）
                         sub_success = synthesize_audio(text_chunk, sub_path, meta, strict_clone=False, speed=PODCAST_SPEED)
 
                     if not sub_success:
