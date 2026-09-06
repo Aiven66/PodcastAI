@@ -158,10 +158,17 @@ Desktop.ini
 .coze-logs
 .preview
 
-# Python venv & 大模型源码（不进 git）
+# Electron 构建产物（voice-runtime 由 CI / 构建脚本从根 voice-service 生成，不入 git）
+electron/voice-runtime/
+electron/artifacts/
+
+# Python venv & 大模型文件（不进 git）
 voice-service/venv/
-voice-service/CosyVoice/
 voice-service/voice-data/
+# CosyVoice 源码纳入 git（供 GitHub Actions 在 Windows 上构建运行时），仅排除生成模型/缓存
+voice-service/CosyVoice/pretrained_models/
+voice-service/CosyVoice/__pycache__/
+voice-service/CosyVoice/third_party/Matcha-TTS/data/
 
 # 运行时生成的音频与缓存
 .preview-cache/

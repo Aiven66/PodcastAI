@@ -1,0 +1,57 @@
+# ─── Windows 桌面端构建（v1.0.79） ───
+# 在 windows-latest runner 上：
+#   1. build-voice-runtime.sh win-x64 → 下载 python-build-standalone + pip 装 Windows 依赖
+#   2. build-runtime-archive.sh  win-x64 → 产出 python-runtime-win-x64-*.tar.gz
+#   3. electron-builder --win → 产出 NSIS 安装包（不含 python/models，几百 MB）
+# 产物通过 GitHub Actions artifact 提供，再由人工上传到 GitHub Release。
+# 手动触发：Actions 页 → Build Windows Desktop → Run workflow。
+
+name: Build Windows Desktop
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node & pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install electron devDependencies
+        working-directory: electron
+        run: pnpm install
+
+      - name: Build voice-runtime (win-x64)
+        shell: bash
+        run: bash electron/build-voice-runtime.sh win-x64
+
+      - name: Build python runtime archive (win-x64)
+        shell: bash
+        run: bash electron/build-runtime-archive.sh win-x64
+
+      - name: Compile & package Windows NSIS
+        shell: bash
+        working-directory: electron
+        run: |
+          pnpm build
+          pnpm pack:win
+
+      - name: Upload artifacts (runtime archive + installer)
+        uses: actions/upload-artifact@v4
+        with:
+          name: podcastai-windows-x64-v1.0.78
+          path: |
+            electron/dist/python-runtime-win-x64-*.tar.gz
+            public/downloads/PodcastAI*.exe
+            public/downloads/PodcastAI*.blockmap
+          if-no-files-found: error
+          retention-days: 30

@@ -6,8 +6,10 @@ import { NextRequest, NextResponse } from 'next/server';
  * GET: 返回 PayPal 配置（客户端 SDK 使用）
  * POST: 处理订单创建和扣款
  *
- * Demo 模式：返回模拟响应
- * 生产模式：调用 PayPal REST API
+ * 未配置（缺 PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET）时统一返回
+ * 503 + JSON { error, enabled }，不再模拟 demo 支付成功；
+ * 客户端（PayPalCheckout.tsx）按 enabled:false / error 分支降级展示。
+ * 生产模式：调用 PayPal REST API。
  */
 
 // 支付方案配置
@@ -24,9 +26,20 @@ function getPayPalBaseApiUrl(): string {
     : 'https://api-m.sandbox.paypal.com';
 }
 
-// Demo 模式判断：缺少 CLIENT_ID 或 CLIENT_SECRET 即为 demo 模式
-function isPayPalDemoMode(): boolean {
-  return !process.env.PAYPAL_CLIENT_ID || !process.env.PAYPAL_CLIENT_SECRET;
+// 未配置判定：缺少 CLIENT_ID 或 CLIENT_SECRET
+function isPayPalConfigured(): boolean {
+  return Boolean(process.env.PAYPAL_CLIENT_ID && process.env.PAYPAL_CLIENT_SECRET);
+}
+
+// 未配置统一响应（503 + JSON，供客户端降级）
+function notConfiguredResponse() {
+  return NextResponse.json(
+    {
+      enabled: false,
+      error: 'PayPal is not configured: PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET are required',
+    },
+    { status: 503 },
+  );
 }
 
 // 获取 PayPal access token（生产模式）
@@ -59,13 +72,13 @@ async function getPayPalAccessToken(): Promise<string> {
 
 // GET: 返回 PayPal 配置
 export async function GET() {
-  const clientId = process.env.PAYPAL_CLIENT_ID;
+  if (!isPayPalConfigured()) {
+    return notConfiguredResponse();
+  }
+
+  const clientId = process.env.PAYPAL_CLIENT_ID!;
   const environment = process.env.PAYPAL_ENVIRONMENT || 'sandbox';
   const currency = process.env.PAYPAL_CURRENCY || 'USD';
-
-  if (!clientId) {
-    return NextResponse.json({ enabled: false });
-  }
 
   return NextResponse.json({
     enabled: true,
@@ -77,6 +90,10 @@ export async function GET() {
 
 // POST: 处理订单创建和扣款
 export async function POST(request: NextRequest) {
+  if (!isPayPalConfigured()) {
+    return notConfiguredResponse();
+  }
+
   try {
     const body = await request.json() as {
       action?: 'create' | 'capture';
@@ -123,16 +140,6 @@ async function handleCreateOrder(body: { planId?: string; userId?: string }) {
       { error: 'Invalid planId' },
       { status: 400 }
     );
-  }
-
-  // Demo 模式：返回模拟订单 ID
-  if (isPayPalDemoMode()) {
-    const orderId = `demo_order_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-    console.log(`[PayPal Demo] Created order ${orderId} for plan ${planId} (user ${userId})`);
-    return NextResponse.json({
-      orderId,
-      demo: true,
-    });
   }
 
   // 生产模式：调用 PayPal API 创建订单
@@ -192,22 +199,13 @@ async function handleCreateOrder(body: { planId?: string; userId?: string }) {
 
 // 扣款
 async function handleCaptureOrder(body: { planId?: string; userId?: string; orderId?: string }) {
-  const { planId, userId, orderId } = body;
+  const { orderId } = body;
 
   if (!orderId) {
     return NextResponse.json(
       { error: 'Missing orderId' },
       { status: 400 }
     );
-  }
-
-  // Demo 模式：模拟扣款成功
-  if (isPayPalDemoMode()) {
-    console.log(`[PayPal Demo] Captured order ${orderId} for plan ${planId} (user ${userId})`);
-    return NextResponse.json({
-      paid: true,
-      demo: true,
-    });
   }
 
   // 生产模式：调用 PayPal API 扣款

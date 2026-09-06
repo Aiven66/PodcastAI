@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { useAppConfig, type AppConfig } from '@clipop/core';
+import { useAppConfig, type AppConfig } from '../core';
 
 export interface PayPalCheckoutProps {
   planId: string;
@@ -42,13 +42,6 @@ interface PayPalButtonsOptions {
   onApprove: (data: { orderID: string }) => Promise<void>;
   onError?: (err: unknown) => void;
   onCancel?: () => void;
-}
-
-declare global {
-  interface Window {
-    paypal?: PayPalSdk;
-    __paypalSdkLoaded?: boolean;
-  }
 }
 
 const DEFAULT_SDK_BASE = 'https://www.paypal.com/sdk/js';
@@ -125,6 +118,7 @@ export function PayPalCheckout({
   useEffect(() => {
     if (state !== 'ready' || !containerRef.current) return;
     if (!window.paypal) return;
+    const paypalSdk: PayPalSdk = window.paypal;
 
     const container = containerRef.current;
     container.innerHTML = '';
@@ -135,7 +129,7 @@ export function PayPalCheckout({
     let buttonsHandle: PayPalButtonsHandle | null = null;
 
     try {
-      buttonsHandle = window.paypal.Buttons({
+      buttonsHandle = paypalSdk.Buttons({
         style: { layout: 'vertical', color: 'gold', shape: 'rect', height: 45 },
         createOrder: async () => {
           const res = await fetch('/api/payment/paypal', {

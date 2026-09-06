@@ -16,9 +16,8 @@ import { useLocale } from '@/components/locale-provider'
 const EXTERNAL_FEEDBACK_URL = 'https://tally.so/r/5BMYVb'
 
 export function GlobalFeedbackButton() {
-  const { locale } = useLocale()
+  const { t } = useLocale()
   const [expanded, setExpanded] = useState(false)
-  const t = (en: string, zh: string) => locale === 'en' ? en : zh
 
   return (
     <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-2">

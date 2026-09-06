@@ -25,7 +25,7 @@ function BlogDetailContent() {
   const params = useParams()
   const router = useRouter()
   const { supabase } = useSupabase()
-  const { locale } = useLocale()
+  const { locale, t } = useLocale()
   const [blog, setBlog] = useState<Blog | null>(null)
   const [loading, setLoading] = useState(true)
   const [initialized, setInitialized] = useState(false)
@@ -54,7 +54,6 @@ function BlogDetailContent() {
     }
   }
 
-  const t = (en: string, zh: string) => locale === 'en' ? en : zh
 
   if (loading) {
     return (

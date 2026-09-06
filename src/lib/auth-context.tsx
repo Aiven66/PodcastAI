@@ -575,25 +575,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (data.user) {
         try {
+          // credits_balance / subscription_tier 由表默认值填充（100 / free）
           await supabase.from('profiles').upsert({
             user_id: data.user.id,
             email,
             name,
             role: 'user',
           }, { onConflict: 'user_id' });
-
-          const { data: existingCredits } = await supabase
-            .from('credits')
-            .select('id')
-            .eq('user_id', data.user.id)
-            .single();
-
-          if (!existingCredits) {
-            await supabase.from('credits').insert({
-              user_id: data.user.id,
-              balance: 100,
-            });
-          }
         } catch {
           // DB 操作失败不影响注册成功
         }

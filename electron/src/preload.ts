@@ -71,6 +71,29 @@ contextBridge.exposeInMainWorld('podcastai', {
   },
 
   /**
+   * Python 运行时管理（v1.0.79 新增）
+   * 安装包剥离了 python 运行时与模型，首次启动自动下载/解压到用户目录。
+   */
+  runtime: {
+    /** 查询运行时状态：{ installed, isDownloading, stage, ... } */
+    status: () => ipcRenderer.invoke('runtime:status'),
+    /** 启动运行时下载（异步，完成后 resolve） */
+    download: () => ipcRenderer.invoke('runtime:download'),
+    /** 中止下载 */
+    abortDownload: () => ipcRenderer.invoke('runtime:abort'),
+    /** 获取当前下载状态 */
+    getDownloadState: () => ipcRenderer.invoke('runtime:get-download-state'),
+    /** 在文件管理器中打开运行时目录 */
+    openDir: () => ipcRenderer.invoke('runtime:open-dir'),
+    /** 订阅下载进度推送，返回取消订阅函数 */
+    onDownloadProgress: (callback: (state: unknown) => void) => {
+      const handler = (_: unknown, state: unknown) => callback(state)
+      ipcRenderer.on('runtime:download-progress', handler)
+      return () => ipcRenderer.removeListener('runtime:download-progress', handler)
+    },
+  },
+
+  /**
    * 持久化设置（v1.0.4: 大部分已内置，保留兼容）
    */
   settings: {
@@ -134,6 +157,12 @@ contextBridge.exposeInMainWorld('podcastai', {
       const handler = () => callback()
       ipcRenderer.on('auth:logout', handler)
       return () => ipcRenderer.removeListener('auth:logout', handler)
+    },
+    /** v1.0.78: 订阅网页端发起的反向认证请求（podcastai://auth）事件 */
+    onWebAuthRequested: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on('auth:web-auth-requested', handler)
+      return () => ipcRenderer.removeListener('auth:web-auth-requested', handler)
     },
   },
 })

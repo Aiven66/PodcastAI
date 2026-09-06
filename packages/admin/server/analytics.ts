@@ -6,7 +6,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { PlanConfig } from '../core/types';
+import type { PlanConfig } from '../../core/types';
 import type { AdminConfig } from './verify';
 import { getTables } from './verify';
 
@@ -112,7 +112,7 @@ export async function fetchAnalytics(
       client.from(tables.creditTransactions).select('description').eq('type', 'purchase'),
       client
         .from(tables.videos)
-        .select('user_id', { count: 'distinct', head: true })
+        .select('user_id')
         .gte('created_at', sevenDaysAgo),
     ]);
 
@@ -121,7 +121,9 @@ export async function fetchAnalytics(
     const newThisMonth = newMonthRes.count || 0;
     const activeSubs = activeSubsRes.count || 0;
     const totalVideos = videosRes.count || 0;
-    const activeUsers7d = activeUsersRes.count || 0;
+    const activeUsers7d = new Set(
+      (activeUsersRes.data || []).map((row) => row?.user_id).filter(Boolean)
+    ).size;
 
     // Revenue from purchase transactions (matched against plan price map).
     let totalRevenue = 0;

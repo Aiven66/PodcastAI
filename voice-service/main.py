@@ -30,11 +30,21 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 # 从 Finder/LaunchPad 启动的应用 PATH 只有 /usr/bin:/bin:/usr/sbin:/sbin
 # 导致 ffmpeg（Homebrew 安装在 /opt/homebrew/bin）不可用
 # edge-tts 合成后的 MP3 无法转换为 WAV，播客生成报 "No audio chunks generated"
-_extra_paths = ['/opt/homebrew/bin', '/usr/local/bin', '/snap/bin']
+# v1.0.79(win): Windows 通过 imageio-ffmpeg 内置 ffmpeg.exe，把其目录并入 PATH
 _cur_path = os.environ.get('PATH', '')
-for _p in _extra_paths:
-    if os.path.isdir(_p) and _p not in _cur_path:
-        _cur_path = _cur_path + os.pathsep + _p
+if sys.platform == 'win32':
+    try:
+        import imageio_ffmpeg
+        _ff_dir = os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
+        if _ff_dir and _ff_dir not in _cur_path:
+            os.environ['PATH'] = _ff_dir + os.pathsep + _cur_path
+    except Exception:
+        pass
+else:
+    _extra_paths = ['/opt/homebrew/bin', '/usr/local/bin', '/snap/bin']
+    for _p in _extra_paths:
+        if os.path.isdir(_p) and _p not in _cur_path:
+            _cur_path = _cur_path + os.pathsep + _p
 os.environ['PATH'] = _cur_path
 
 import numpy as np
@@ -884,24 +894,30 @@ _whisper_model = None
 
 def _get_whisper_model():
     """懒加载 Whisper 模型（仅在需要时加载）
-    使用 small 模型以获得更高的转录准确率（base 模型准确率较低，
-    转录错误会导致 CosyVoice2 克隆音色严重偏离）。
+    v1.0.68: 升级到 medium 模型 — 中文准确率大幅提升，减少幻觉（"听出"不存在的文字）
+    small 模型的幻觉是漏读校验反复放行的根因之一。
     """
     global _whisper_model
     if _whisper_model is None:
         try:
             import whisper
-            logger.info("Loading Whisper small model for local ASR (higher accuracy)...")
-            _whisper_model = whisper.load_model("small")
-            logger.info("Whisper small model loaded successfully")
+            logger.info("Loading Whisper medium model for Chinese-optimized ASR...")
+            _whisper_model = whisper.load_model("medium")
+            logger.info("Whisper medium model loaded successfully")
         except Exception as e:
-            logger.warning(f"Failed to load Whisper small model, falling back to base: {e}")
+            logger.warning(f"Failed to load Whisper medium model, falling back to small: {e}")
             try:
                 import whisper
-                _whisper_model = whisper.load_model("base")
-                logger.info("Whisper base model loaded (fallback)")
+                _whisper_model = whisper.load_model("small")
+                logger.info("Whisper small model loaded (fallback)")
             except Exception as e2:
-                logger.warning(f"Failed to load Whisper base model: {e2}")
+                logger.warning(f"Failed to load Whisper small model: {e2}")
+                try:
+                    import whisper
+                    _whisper_model = whisper.load_model("base")
+                    logger.info("Whisper base model loaded (last resort)")
+                except Exception as e3:
+                    logger.warning(f"Failed to load Whisper base model: {e3}")
     return _whisper_model
 
 def _is_chinese_text(text: str) -> bool:
@@ -932,6 +948,135 @@ def _detect_text_language(text: str) -> str:
         return 'en'
     else:
         return 'mixed'
+
+
+# ═══════════════════════════════════════════════════════════════
+# v1.0.73: 中文数字规范化（TN — Text Normalization）
+# 根因：text_frontend=False 时阿拉伯数字直接进 tokenizer，LLM 对数字
+# token 建模不稳 → "2025"读成"2015"、"10%"漏读。合成前把数字转为
+# 中文读音文本，模型只需处理纯中文 → 数字朗读精准。
+# ═══════════════════════════════════════════════════════════════
+_CN_DIGIT_MAP = {'0': '零', '1': '一', '2': '二', '3': '三', '4': '四',
+                 '5': '五', '6': '六', '7': '七', '8': '八', '9': '九'}
+
+# 常用量词/单位字：数字后跟这些字 → 按数值读法（"10001000次"→"一千万一千次"）
+_CN_UNIT_CHARS = set('个位倍人次天点分钟秒小时万亿百千万亿元美欧日圆角分米克斤吨升度批种项台'
+                     '件名岁层楼号路段章节集课题阵场轮遍趟顿强年月日上下左右')
+
+
+def _digits_to_chinese(digits: str) -> str:
+    """逐位读：'2025' → '二零二五'（年份、编号、电话等）"""
+    return ''.join(_CN_DIGIT_MAP[c] for c in digits)
+
+
+def _read_section(n: int) -> str:
+    """读 0-9999 节内数值：1024 → '一千零二十四'，15 → '十五'"""
+    if n == 0:
+        return ''
+    parts = []
+    for val, unit in ((1000, '千'), (100, '百'), (10, '十')):
+        d, n = divmod(n, val)
+        if d:
+            parts.append(_CN_DIGIT_MAP[str(d)] + unit)
+        elif parts and n:
+            parts.append('零')
+    if n:
+        parts.append(_CN_DIGIT_MAP[str(n)])
+    s = ''.join(parts)
+    if s.startswith('一十'):
+        s = s[1:]  # 口语：一十 → 十（"十五"而非"一十五"）
+    return s
+
+
+def _read_int_chinese(num: int) -> str:
+    """整数按中文万进制读法：12345 → '一万二千三百四十五'
+
+    补零规则：相邻非零节之间，低节 < 1000（千位空缺）时补"零"
+    如 10001 → '一万零一'，100000001 → '一亿零一'
+    """
+    if num == 0:
+        return '零'
+    if num < 0:
+        return '负' + _read_int_chinese(-num)
+    yi = num // 10**8 if num >= 10**8 else 0
+    rest = num - yi * 10**8
+    wan = rest // 10**4 if rest >= 10**4 else 0
+    ge = rest - wan * 10**4
+    out = ''
+    for val, u in ((yi, '亿'), (wan, '万'), (ge, '')):
+        if val == 0:
+            continue
+        if out and val < 1000:
+            out += '零'
+        out += (_read_int_chinese(val) if val >= 10000 else _read_section(val)) + u
+    return out
+
+
+def _read_number_chinese(num_str: str) -> str:
+    """数字串转中文读法：'3.14' → '三点一四'，'12345' → 按万进制"""
+    if '.' in num_str:
+        int_part, frac = num_str.split('.', 1)
+        int_read = _read_int_chinese(int(int_part)) if int_part else '零'
+        return int_read + '点' + ''.join(_CN_DIGIT_MAP[c] for c in frac)
+    return _read_int_chinese(int(num_str))
+
+
+def _normalize_chinese_numbers(text: str) -> str:
+    """v1.0.73: 阿拉伯数字 → 中文读音（按序规则）：
+      1. 千分位  1,234        → 1234
+      2. 百分比  10% / 3.5%   → 百分之十 / 百分之三点五
+      3. 年份    2025年       → 二零二五年（逐位）
+      4. 月日    8月19日      → 八月十九日
+      5. 序数    第3          → 第三
+      6. 范围    3-5年        → 三到五年
+      7. 其余数字：后跟汉字单位→按读法；≥8位→逐位（电话）；4位裸数字→逐位（年份）
+    """
+    if not text or not re.search(r'\d', text):
+        return text
+    # 1. 千分位逗号（仅数字 3 位一组场景）
+    text = re.sub(r'(\d),(?=\d{3}(\D|$))', r'\1', text)
+    # 2. 百分比
+    text = re.sub(r'(\d+(?:\.\d+)?)\s*%',
+                  lambda m: '百分之' + _read_number_chinese(m.group(1)), text)
+    # 3. 年份（任意 4 位数字后跟"年"，逐位读："2025年"→"二零二五年"、
+    #    "1066年"→"一零六六年"；1-3 位（如"100年"时长）走数值读法）
+    text = re.sub(r'(?<!\d)(\d{4})\s*年',
+                  lambda m: _digits_to_chinese(m.group(1)) + '年', text)
+    # 4. 月 / 日
+    text = re.sub(r'(?<!\d)(\d{1,2})\s*月',
+                  lambda m: _read_int_chinese(int(m.group(1))) + '月', text)
+    text = re.sub(r'(?<!\d)(\d{1,3})\s*(?=[日号])',
+                  lambda m: _read_int_chinese(int(m.group(1))), text)
+    # 5. 序数
+    text = re.sub(r'第\s*(\d+)',
+                  lambda m: '第' + _read_int_chinese(int(m.group(1))), text)
+    # 6. 数字范围连字符 → "到"（先于通用替换，避免当负号）
+    text = re.sub(r'(?<=\d)\s*[-–—~至]\s*(?=\d)', '到', text)
+
+    # 7. 通用数字替换（优先级：量词单位 > 长号码 > 裸年份 > 汉字 > 默认数值）
+    def _repl(m):
+        num = m.group(0)
+        end = m.end()
+        after = text[end:end + 1] if end < len(text) else ''
+        prev = text[m.start() - 1] if m.start() > 0 else ''
+        after_is_cjk = bool(after) and '\u4e00' <= after <= '\u9fff'
+        # 7a. 后跟量词/单位 → 按数值读法："10001000次"→"一千万一千次"、"2.5万"→"二点五万"
+        if after_is_cjk and after in _CN_UNIT_CHARS:
+            return _read_number_chinese(num)
+        # 7b. 长纯数字（≥8 位，电话/订单号）→ 逐位读："13812345678请"→"一三八一二三四五六七八请"
+        if '.' not in num and len(num) >= 8:
+            return _digits_to_chinese(num)
+        # 7c. 形似年份的裸 4 位整数（1900-2099，前非 ASCII 字母数字）→ 逐位读：
+        #     "从2025开始"→"从二零二五开始"、"2025。"→"二零二五"
+        if re.fullmatch(r'(?:19|20)\d{2}', num) and not (prev and prev.isascii() and prev.isalnum()):
+            return _digits_to_chinese(num)
+        # 7d. 后跟其他汉字（动词/形容词）→ 数值读法："15真香"→"十五真香"
+        if after_is_cjk:
+            return _read_number_chinese(num)
+        return _read_number_chinese(num)
+
+    text = re.sub(r'\d+(?:\.\d+)?', _repl, text)
+    return text
 
 
 def _preprocess_english_text(text: str) -> str:
@@ -1015,9 +1160,11 @@ def _preprocess_english_text(text: str) -> str:
 def _preprocess_text_for_synthesis(text: str) -> str:
     """根据文本语言进行预处理，优化 TTS 合成效果
 
-    - 中文：保持原样（CosyVoice2 对中文支持好）
+    - 中文：v1.0.73 数字规范化（TN）— 阿拉伯数字转中文读音，
+      根治"2025 读成 2015"、"10% 漏读"（text_frontend=False 下
+      数字直接进 tokenizer 导致的建模不稳）
     - 英文：应用英文预处理（缩写展开、数字转换）
-    - 混合：英文部分应用预处理，保留中文
+    - 混合：先中文数字规范化（中文语境数字按中文读法），再英文预处理
     """
     if not text:
         return text
@@ -1025,12 +1172,13 @@ def _preprocess_text_for_synthesis(text: str) -> str:
     if lang == 'en':
         return _preprocess_english_text(text)
     elif lang == 'mixed':
-        # 混合文本：仅处理英文片段（保持中文部分不变）
-        # 简单策略：对整个文本应用英文预处理，但保留中文字符
+        # 混合文本：先数字转中文读音（播客脚本以中文朗读为主），
+        # 再应用英文预处理（缩写展开等，数字已转中文不受影响）
+        text = _normalize_chinese_numbers(text)
         return _preprocess_english_text(text)
     else:
-        # 中文：保持原样
-        return text
+        # 中文：数字规范化（TN），其余保持原样
+        return _normalize_chinese_numbers(text)
 
 
 def _transcribe_audio(audio_path: str, language: Optional[str] = None) -> str:
@@ -1288,16 +1436,27 @@ def _has_abnormal_repetition(t_stream: str, expected: str) -> bool:
     return False
 
 
-def _verify_and_fix_synthesis(output_path: str, text: str, speed: float = 1.15) -> bool:
-    """v1.0.61: Whisper 闭环校验 — 保证音频"一次不差"地朗读脚本文案
+def _verify_and_fix_synthesis(output_path: str, text: str, speed: float = 1.15, allow_trim: bool = True, _depth: int = 0, loose: bool = False) -> bool:
+    # loose=True 时用更宽容的门限（减少 Whisper 误判吞字造成的"整块漏读"）。
+    # 物理时长门禁（检查 0 / 0b）始终保持严格，大段漏读不会被放行。
+    """v1.0.71: 音频时长硬门禁 + Whisper 闭环校验 + 裁剪后复验
 
-    检测三类问题（词级时间戳精准定位）：
-      1. 漏读（覆盖 < 85%）→ 返回 False，上层重试链拆分重合成
+    漏读终极防线（v1.0.71 新增第三重保护）：
+      0. 音频时长硬门禁：若音频时长远小于预期（文本长度/语速），直接判定漏读 → 失败。
+      0b. Whisper 幻觉速率检测：transcript 字数/音频时长超过人类朗读极限
+          → transcript 不可信（Whisper 脑补了没读的内容）→ 只信任时长门禁。
+      0c. 裁剪后复验：发生头/尾裁剪后，对裁剪结果重新转写校验一次。
+          根因（v1.0.71 实测日志抓到）：Whisper 幻觉在 transcript 尾部多"听出"
+          61 字 → 裁剪逻辑判定"尾部复读"→ 把真实朗读内容裁掉 12.5s → 漏读。
+          裁剪本身成了漏读来源！现在裁剪必须通过复验才放行。
+
+    检测四类问题：
+      1. 漏读（覆盖不足 / 连续缺失短语）→ 返回 False，上层重试链拆分重合成
       2. 中间复读（相邻重复 n-gram 且原文无此重复）→ 返回 False，重试
-      3. 头部/尾部幻觉（instruct 指令被读出、复读、拖尾）→ 原地精准裁剪
+      3. 头部/尾部幻觉（instruct 指令被读出、复读、拖尾）→ 原地精准裁剪 + 复验
 
     Returns:
-        True  — 音频正常（或已原地裁剪掉头/尾多余内容）
+        True  — 音频正常（或已原地裁剪掉头/尾多余内容且复验通过）
         False — 音频漏读/中间复读/异常，调用方应重试合成
     """
     if not _VERIFY_ENABLED:
@@ -1306,6 +1465,30 @@ def _verify_and_fix_synthesis(output_path: str, text: str, speed: float = 1.15) 
     expected = _norm_verify_text(text)
     if len(expected) < 4:
         return True  # 文本太短（<4字），ASR 噪声大，跳过校验
+
+    # ── v1.0.69: 检查 0 — 音频时长硬门禁（Whisper 幻觉的最后防线） ──
+    # 根因：Whisper 模型对 TTS 合成音频有时会"听出"实际没说的内容
+    #   （语言模型预测），导致漏读音频被误判为"完整"。
+    #   音频时长不受 ASR 影响，是绝对的物理指标：如果音频时长明显短于预期，
+    #   一定存在漏读。
+    #
+    # v1.0.71 修复：语速基准从 3.5 提至 5.0 字/秒（真实最快朗读语速）
+    #   v1.0.69 用 3.5 字/s 估算 expected_min 偏大 → 70% 阈值实际拦截线过低，
+    #   213 字实测案例：音频 44.5s（漏读）仍高于 0.7×60.9s=42.6s → 放行。
+    #   中文播音最快约 5 字/s（speed=1.0），CosyVoice2 speed=1.15 → 5.75 字/s。
+    #   用 5.0 字/s 上限 + 75% 阈值：213字@1.15 → 37s×0.75=27.8s 拦截线，
+    #   完整朗读（44s）安全通过，漏读一半（22s）正确拦截。
+    try:
+        actual_dur = _get_audio_duration(output_path)
+        expected_min_dur = max(len(expected) / (5.0 * max(speed, 0.5)), 0.8)
+        if actual_dur < expected_min_dur * 0.75:
+            logger.warning(
+                f"v1.0.71 verify: AUDIO TOO SHORT — actual={actual_dur:.1f}s, "
+                f"expected_min={expected_min_dur:.1f}s, threshold={expected_min_dur * 0.75:.1f}s, "
+                f"text='{text[:30]}...' -> retry")
+            return False
+    except Exception as e:
+        logger.warning(f"v1.0.71 verify: duration check failed: {e}")
 
     hint = _detect_text_language(text)
     result = _transcribe_with_segments(output_path, hint_lang=hint)
@@ -1341,67 +1524,234 @@ def _verify_and_fix_synthesis(output_path: str, text: str, speed: float = 1.15) 
         logger.warning("v1.0.61 verify: transcription empty, treating as failure")
         return False
 
+    # ── v1.0.71: 检查 0b — Whisper 幻觉速率检测 ──
+    # 原理：人类朗读有物理速度上限（中文 ≈ 6.5字/s，含 speed 加速）。
+    #   transcript 字数 / 音频时长 超过上限 → Whisper 把"没读的内容"脑补进了
+    #   transcript（幻觉）→ coverage/recall/gap 全部指标不可信。
+    #   实测案例：213字文本 44.5s 音频，transcript 却有 273 字（6.1字/s 越限）
+    #   → 幻觉多出的"尾部内容"引发误裁剪 → 真实内容被切 → 漏读。
+    #   此时只信任物理时长：用严格门禁（0.85）判定，不采信 transcript。
+    try:
+        actual_dur_2 = _get_audio_duration(output_path)
+        char_rate = len(t_stream) / max(actual_dur_2, 0.1)
+        lang_hint_rate = 6.5 if hint in ('zh', None) else 16.0  # 英文按字符计放宽
+        if char_rate > lang_hint_rate:
+            strict_min = max(len(expected) / (5.0 * max(speed, 0.5)), 0.8)
+            if actual_dur_2 < strict_min * 0.85:
+                logger.warning(
+                    f"v1.0.71 verify: WHISPER HALLUCINATION suspected "
+                    f"(rate={char_rate:.1f}chars/s > {lang_hint_rate}, transcript={len(t_stream)}chars) "
+                    f"AND duration {actual_dur_2:.1f}s < {strict_min * 0.85:.1f}s -> retry")
+                return False
+            logger.info(
+                f"v1.0.71 verify: transcript rate {char_rate:.1f}chars/s suspicious but duration OK "
+                f"({actual_dur_2:.1f}s >= {strict_min * 0.85:.1f}s), proceeding with caution")
+    except Exception as e:
+        logger.warning(f"v1.0.71 verify: hallucination rate check failed: {e}")
+
     import difflib
-    sm = difflib.SequenceMatcher(None, expected, t_stream, autojunk=False)
+    # v1.0.73: 数字块归一化后比对（coverage/gap/recall 三指标统一）。
+    # 根因：合成文本的数字已转中文读音（"二零二五年""百分之十"），但 Whisper
+    #   转写可能输出阿拉伯数字（"2025年""10%"）→ coverage/max_delete_gap 把
+    #   正确朗读误判为漏读 → zero_shot×6 + instruct2 全部"失败" → 降级
+    #   Edge TTS → 克隆音色中混入系统音色（用户反馈的直接原因）。
+    # 方案（v1.0.73b 扩充）：以下形态统一替换为单个 '#' 占位符：
+    #   - 百分之X / 百分之10 / 百分之3.5 / X%（含 % 本身，防"百分之十"vs"10%"错配）
+    #   - 阿拉伯数字（可带小数点/%）："2025" "3.5"
+    #   - 中文数字串（≥2字）："二零二五" "十二点五"（"一个"这类单字词不受影响）
+    #   - 英文数字词连串（_norm_verify_text 已去空格）："fifteenpercent" ↔ "15%"
+    #   数字整段没读时 expected 的 '#' 在 transcript 中缺失，仍会拉低全部指标
+    #   → 真漏读照常拦截。
+    # 同时构建"vm 索引 → t_stream 原始索引"映射（头部锚点→数字块首字符，
+    #   尾部锚点→数字块末字符），供词级时间戳裁剪精确定位（vm 串长度与
+    #   t_stream 不同，直接用 vm 索引取 char_times 会错位切错位置）。
+    _num_pat = re.compile(
+        r'百分之(?:[零一二三四五六七八九十百千万亿点两]+|[0-9]+(?:\.[0-9]+)?)+%?'      # 百分之X（中/阿混合）
+        r'|[0-9]+(?:\.[0-9]+)?%?[零一二三四五六七八九十百千万亿点两]{0,2}'               # 阿拉伯数字（吸收尾部单位字："2.5万"→"#"）
+        r'|[零一二三四五六七八九十百千万亿点两]+'                                       # 中文数字串（含单字："八月"↔"8月"）
+        r'|(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|'
+        r'thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|'
+        r'thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|'
+        r'billion|percent|point|half|quarter)+'                                      # 英文数字词连串
+    )
+    exp_vm = _num_pat.sub('#', expected)
+    tr_vm_parts = []
+    vm_to_orig_head = []  # vm 索引 → 原始索引（'#' 指数字块首字符，用于头部裁剪锚点）
+    vm_to_orig_tail = []  # vm 索引 → 原始索引（'#' 指数字块末字符，用于尾部裁剪锚点）
+    _pos = 0
+    for _m in _num_pat.finditer(t_stream):
+        for _k in range(_pos, _m.start()):
+            tr_vm_parts.append(t_stream[_k])
+            vm_to_orig_head.append(_k)
+            vm_to_orig_tail.append(_k)
+        tr_vm_parts.append('#')
+        vm_to_orig_head.append(_m.start())
+        vm_to_orig_tail.append(_m.end() - 1)
+        _pos = _m.end()
+    for _k in range(_pos, len(t_stream)):
+        tr_vm_parts.append(t_stream[_k])
+        vm_to_orig_head.append(_k)
+        vm_to_orig_tail.append(_k)
+    tr_vm = ''.join(tr_vm_parts)
+    sm = difflib.SequenceMatcher(None, exp_vm, tr_vm, autojunk=False)
     blocks = [b for b in sm.get_matching_blocks() if b.size > 0]
     covered = sum(b.size for b in blocks)
-    coverage = covered / len(expected)
+    coverage = covered / max(len(exp_vm), 1)
     logger.info(
-        f"v1.0.61 verify: script={len(expected)}chars, transcript={len(t_stream)}chars, "
-        f"coverage={coverage:.1%}")
+        f"v1.0.73 verify: script={len(expected)}chars(vm={len(exp_vm)}), "
+        f"transcript={len(t_stream)}chars(vm={len(tr_vm)}), coverage={coverage:.1%}")
 
     # ── 检查 1：漏读（覆盖不足）→ 失败重试 ──
-    if coverage < 0.85:
+    # v1.0.66: 彻底修复"漏读放行"——v1.0.64 曾把阈值放宽到 0.55，导致只读出一半
+    #   文案的音频也被容忍放行（用户反复反馈漏读的直接原因）。
+    #   现改用双指标判定，既容忍 ASR 误听（假漏读），又绝不放行真漏读：
+    #     char_recall — 字符多重集召回率：expected 与 transcript 的字符交集占比。
+    #                   ASR 把字"听错"（替换）不降低召回（字数不变），只有"没读出来"
+    #                   （删除/整段缺失）才降低 → 抓真漏读的可靠指标。
+    #     coverage    — 序列匹配覆盖率：字符是否按顺序读出。
+    #   判定规则（同时满足才算通过）：
+    #     char_recall >= 0.90  （内容基本完整；20字句子漏开头2字即拦截）
+    #     coverage    >= 0.75  （顺序大致正确，容忍 Whisper 插入词导致序列断裂）
+    #   任一不满足 → 返回 False → 上层重试链（换采样 → 细分 → instruct2 → Edge TTS 保底）
+    from collections import Counter
+    expected_counter = Counter(exp_vm)
+    transcript_counter = Counter(tr_vm)
+    char_recall = sum((expected_counter & transcript_counter).values()) / max(len(exp_vm), 1)
+
+    # ── v1.0.71: 连续缺失段检测（区分"真漏读"与"ASR 零散误听"的决定性指标）──
+    # 根因：recall>=0.92 对 80 字块容忍漏 6 个连续字（一个完整短语，如"在全球范围内"），
+    #   用户耳朵能清晰听出缺失 → v1.0.70 之前反复反馈"漏读"的直接技术漏洞。
+    # 区分原理：
+    #   真漏读（LLM 提前 EOS / 跳句）→ expected 中出现 >=4 个"连续"未读字符
+    #   ASR 误听 → 零散 1-3 字替换/缺失（recall 不降或微降），无长连续 gap
+    # 实现：SequenceMatcher.get_opcodes() 的 delete 操作（expected 有、transcript 无），
+    #   取最长连续 delete 段长度 max_delete_gap：
+    #     >= 4 → 真漏读，无论 recall 多高都拦截
+    #     <= 3 → ASR 噪声，放行（由 recall 辅助指标兜底）
+    opcodes = sm.get_opcodes()
+    max_delete_gap = 0
+    missing_snippet = ''
+    for tag, i1, i2, j1, j2 in opcodes:
+        if tag == 'delete':
+            gap = i2 - i1  # expected 有、transcript 完全没有 → 真漏读
+        elif tag == 'replace':
+            # replace = "读出来了但 ASR 听错"（如"人工智能"→"人工智人"）
+            # 与"读了一半漏一半"的混合。按 transcript 对应长度折算净缺失：
+            #   净缺失 = expected 段长 - transcript 对应段长（下限 0）
+            gap = max(0, (i2 - i1) - (j2 - j1))
+        else:
+            continue
+        if gap > max_delete_gap:
+            max_delete_gap = gap
+            missing_snippet = exp_vm[i1:i2]  # v1.0.73: 索引基于数字归一化文本
+
+    # ── v1.0.71 判定（三指标联防，任一不满足即重试）──
+    # v1.0.74: 双门限（loose=True 用于 zero_shot 最后重试）。
+    # 物理时长门禁永远严格，此处只放宽 transcript 比对，避免 Whisper 系统性
+    # 漏听（如"的/了/是"、数字读法差异、同音错字）导致整块被误杀静音。
+    #   严格（默认）：max_delete_gap>=4 拦截 · recall>=0.90 · coverage>=0.75
+    #   宽松（loose）：max_delete_gap>=8 拦截 · recall>=0.82 · coverage>=0.68
+    RECALL_TH   = 0.82 if loose else 0.90
+    COV_TH      = 0.68 if loose else 0.75
+    GAP_TH      = 8    if loose else 4
+    if max_delete_gap >= GAP_TH:
         logger.warning(
-            f"v1.0.61 verify: INCOMPLETE synthesis (coverage={coverage:.1%} < 85%), "
-            f"script='{text[:40]}...', transcript='{t_stream[:40]}...' -> retry")
+            f"v1.0.71 verify: MISSING PHRASE detected — {max_delete_gap} consecutive chars "
+            f"unread: '{missing_snippet}' (coverage={coverage:.1%}, char_recall={char_recall:.1%}) -> retry")
         return False
+    if char_recall < RECALL_TH or coverage < COV_TH:
+        logger.warning(
+            f"v1.0.71 verify: INCOMPLETE synthesis (coverage={coverage:.1%}, "
+            f"char_recall={char_recall:.1%}, max_gap={max_delete_gap}) -> retry")
+        return False
+    if coverage < 0.90:
+        # 内容完整但序列有断裂（ASR 插词/误听）— 放行但记录
+        logger.info(
+            f"v1.0.70 verify: ASR mishear tolerated (coverage={coverage:.1%}, "
+            f"char_recall={char_recall:.1%} — content complete, only sequence broken)")
 
     # ── 检查 2：中间复读 → 失败重试（无法安全裁剪）──
-    if _has_abnormal_repetition(t_stream, expected):
+    # v1.0.73: 用 vm 归一化文本检测 — 防 "22.22"→"2222" 这类重复数字被误判复读；
+    # 真复读（"百分之十百分之十"）在 vm 串中仍呈 "# #" 相邻重复，照常拦截
+    if _has_abnormal_repetition(tr_vm, exp_vm):
         return False
 
-    # ── 检查 3：头部/尾部幻觉 → 词级时间戳精准裁剪 ──
-    # 文案首个可靠匹配锚点（块长>=2，避免单字噪声误锚定）
-    anchor_blocks = [b for b in blocks if b.size >= 2] or blocks
-    first_block = min(anchor_blocks, key=lambda b: b.b)
-    head_extra = first_block.b  # 文案开始前，转录流里多出的字符数
-    head_tolerance = max(4, int(len(expected) * 0.10))
+    # ── 检查 3：头部/尾部幻觉 → 词级时间戳精准裁剪（仅在完整朗读后）──
+    # v1.0.65: 只有当"脚本已完整朗读"（coverage >= 0.85）时才允许裁剪头/尾。
+    #   Whisper 对开头/结尾的字句偶有误听，会把"真实读出的文案"当成多余字符；
+    #   此时若裁剪，会把实际内容切掉 → 造成"漏掉脚本文案"。
+    #   因此低覆盖率时宁可保留完整音频，也绝不裁剪。
+    # v1.0.71: 复验阶段（allow_trim=False）不再裁剪 — 防止递归误裁。
     trim_start = 0.0
-    if head_extra > head_tolerance:
-        # 头部幻觉（典型：instruct 指令文本被读出，如"用自然流畅的语气朗读"）
-        trim_start = max(0.0, char_times[first_block.b][0] - 0.10)
-        logger.warning(
-            f"v1.0.61 verify: HEAD HALLUCINATION detected "
-            f"(extra={head_extra}chars > tolerance={head_tolerance}), "
-            f"content='{t_stream[:first_block.b]}', trimming start to {trim_start:.2f}s")
+    trim_end = None
+    if coverage >= 0.85 and allow_trim:
+        # 文案首个可靠匹配锚点（块长>=2，避免单字噪声误锚定）
+        anchor_blocks = [b for b in blocks if b.size >= 2] or blocks
+        first_block = min(anchor_blocks, key=lambda b: b.b)
+        head_extra = first_block.b  # 文案开始前，转录流里多出的字符数
+        head_tolerance = max(4, int(len(exp_vm) * 0.10))
+        if head_extra > head_tolerance and first_block.b < len(vm_to_orig_head):
+            # 头部幻觉（典型：instruct 指令文本被读出，如"用自然流畅的语气朗读"）
+            # v1.0.73: vm 索引经 vm_to_orig_head 映射回原始索引再取时间戳
+            head_orig_idx = min(vm_to_orig_head[first_block.b], len(char_times) - 1)
+            trim_start = max(0.0, char_times[head_orig_idx][0] - 0.10)
+            logger.warning(
+                f"v1.0.65 verify: HEAD HALLUCINATION detected "
+                f"(extra={head_extra}chars > tolerance={head_tolerance}), "
+                f"content='{t_stream[:head_orig_idx]}', trimming start to {trim_start:.2f}s")
 
-    # 文案完整覆盖后，转录流中多余的部分 = 尾部复读或幻觉内容
-    coverage_end = max((b.b + b.size) for b in blocks) if blocks else 0
-    tail_extra = len(t_stream) - coverage_end
-    tail_tolerance = max(8, int(len(expected) * 0.15))  # 容忍 ASR 末尾噪声
+        # 文案完整覆盖后，转录流中多余的部分 = 尾部复读或幻觉内容
+        coverage_end = max((b.b + b.size) for b in blocks) if blocks else 0
+        tail_extra = len(tr_vm) - coverage_end
+        tail_tolerance = max(8, int(len(exp_vm) * 0.15))  # 容忍 ASR 末尾噪声
+        if tail_extra > tail_tolerance and coverage_end > 0 and coverage_end <= len(vm_to_orig_tail):
+            # ── v1.0.71: 裁剪物理自洽性预检 — 宁可保留复读，绝不误裁真实内容 ──
+            # 两个实测案例的特征几乎相同（尾部"多余"50-60字），无法用内容相似度区分：
+            #   案例A（误裁）：Whisper 幻觉多听 61 字 → 裁剪切掉 12.5s 真实内容 → 漏读
+            #   案例B（真复读）：音频尾部真有 15s 复读 → 应该裁
+            # 区分它们的决定性指标 = 裁剪后时长能否容下正文的最小朗读时间：
+            #   正文最小时间 = len(expected) / (5.0字/s × speed)
+            #   裁剪后时长 >= 最小时间×0.95 → 裁掉的部分物理上"装不下"正文 → 一定是
+            #     多余内容 → 安全裁剪 + 复验
+            #   裁剪后时长 < 最小时间×0.95 → 若真裁了，正文就装不下 → 必然误裁 →
+            #     保留完整音频（用户听到复读也远好于漏读，复读交由重试链优化）
+            # v1.0.73: vm 索引经 vm_to_orig_tail 映射（'#'→数字块末字符时间戳，
+            #   宁晚勿早，防止把数字朗读的尾音裁掉）
+            tail_orig_idx = min(vm_to_orig_tail[coverage_end - 1], len(char_times) - 1)
+            proposed_end = char_times[tail_orig_idx][1] + 0.05
+            try:
+                body_min_dur = max(len(expected) / (5.0 * max(speed, 0.5)), 1.0)
+                kept_after_trim = proposed_end - trim_start
+                if kept_after_trim >= body_min_dur * 0.95:
+                    trim_end = proposed_end
+                    logger.warning(
+                        f"v1.0.71 verify: TAIL REPETITION detected "
+                        f"(extra={tail_extra}chars, kept={kept_after_trim:.1f}s >= "
+                        f"body_min={body_min_dur:.1f}s) — safe to trim end to {trim_end:.2f}s")
+                else:
+                    logger.warning(
+                        f"v1.0.71 verify: tail extra {tail_extra}chars but trim unsafe "
+                        f"(kept={kept_after_trim:.1f}s < body_min={body_min_dur:.1f}s) — "
+                        f"KEEPING full audio (repetition tolerated, missing content NOT)")
+            except Exception as trim_check_err:
+                # 时间戳异常时保守处理：不裁剪，保留完整音频
+                logger.warning(f"v1.0.71 verify: trim safety check failed: {trim_check_err}, keeping full audio")
+
+    # ── 执行裁剪（头部或尾部任一需要）──
     data, sr = sf.read(output_path)
     if data.ndim > 1:
         data = data.mean(axis=1)
     total_dur = len(data) / sr
-    trim_end = total_dur
-    if tail_extra > tail_tolerance:
-        last_idx = min(coverage_end, len(char_times)) - 1
-        trim_end = char_times[last_idx][1] + 0.05
-        logger.warning(
-            f"v1.0.61 verify: TAIL REPETITION/HALLUCINATION detected "
-            f"(extra={tail_extra}chars > tolerance={tail_tolerance}), "
-            f"content='{t_stream[coverage_end:]}', trimming end to {trim_end:.2f}s")
-
-    # ── 执行裁剪（头部或尾部任一需要）──
+    if trim_end is None:
+        trim_end = total_dur
     if trim_start > 0.0 or trim_end < total_dur:
-        expected_dur = max(len(expected) / (3.5 * max(speed, 0.5)), 1.0)
+        expected_dur = max(len(expected) / (5.0 * max(speed, 0.5)), 1.0)
         new_dur = trim_end - trim_start
-        if new_dur < expected_dur * 0.4 or new_dur <= 0:
+        if new_dur < expected_dur * 0.75 or new_dur <= 0:
             # 裁剪后时长异常（裁掉太多）→ 失败重试
             logger.warning(
-                f"v1.0.61 verify: trim result abnormal (kept={new_dur:.1f}s, "
-                f"expected_min={expected_dur * 0.4:.1f}s) -> retry")
+                f"v1.0.71 verify: trim result abnormal (kept={new_dur:.1f}s, "
+                f"expected_min={expected_dur * 0.75:.1f}s) -> retry")
             return False
         start_sample = int(trim_start * sr)
         end_sample = min(int(trim_end * sr), len(data))
@@ -1415,7 +1765,195 @@ def _verify_and_fix_synthesis(output_path: str, text: str, speed: float = 1.15) 
         logger.info(
             f"v1.0.61 verify: trimmed audio {total_dur:.2f}s -> {new_dur:.2f}s "
             f"(head={trim_start:.2f}s, tail={total_dur - trim_end:.2f}s removed)")
+        # ── v1.0.71: 裁剪后复验 — 防止误裁真实内容 ──
+        # 裁剪本身就是潜在的漏读来源（误裁 12.5s 真实内容案例）。
+        # 对裁剪后的音频重新转写校验一次（allow_trim=False 防递归），
+        # 复验通过才放行；复验失败 → 整体失败 → 上层重试链换采样重合成。
+        if _depth == 0:
+            recheck = _verify_and_fix_synthesis(output_path, text, speed=speed, allow_trim=False, _depth=1)
+            if not recheck:
+                logger.warning(
+                    f"v1.0.71 verify: POST-TRIM RECHECK FAILED — trim likely cut real content -> retry")
+                return False
+            logger.info("v1.0.71 verify: post-trim recheck passed")
     return True
+
+
+# ═══════════════════════════════════════════════════════════════
+# v1.0.65: 逐句合成 + 逐句校验，保证完整朗读脚本文案
+# ═══════════════════════════════════════════════════════════════
+
+# v1.0.73: 句点/逗号后跟数字时不切分 — 保护小数（3.5万）与千分位（1,234）
+# 不被拦腰截断（分句发生在数字规范化之前，此处仍是原始阿拉伯数字文本）
+_SENT_SPLIT_RE = re.compile(r'(?<=[。！？!?；;])|(?<=\.)(?!\d)')
+_SUB_SPLIT_RE = re.compile(r'(?<=[，、；;])|(?<=,)(?!\d)')
+
+
+def _split_script_pieces(text, max_len=28):
+    """把文本切成句子级小块（优先整句，长句按子句细分到 <= max_len 字符）。
+
+    v1.0.67: 默认 max_len 45 → 28。块越短，zero_shot 的 LLM 越不容易提前输出
+    EOS 截断（漏读根因），完整朗读成功率越高。细分重试用更小的 max_len(16)。
+    返回去除空白后的文本块列表。
+    """
+    sentences = [s for s in _SENT_SPLIT_RE.split(text.strip()) if s.strip()]
+    if not sentences:
+        sentences = [text.strip()]
+    pieces = []
+    for sent in sentences:
+        sent = sent.strip()
+        if not sent:
+            continue
+        if len(sent) <= max_len:
+            pieces.append(sent)
+            continue
+        # 长句按子句细分
+        subs = [x for x in _SUB_SPLIT_RE.split(sent) if x.strip()]
+        buf = ""
+        for sub in subs:
+            if len(buf) + len(sub) > max_len and buf:
+                pieces.append(buf)
+                buf = sub
+            else:
+                buf += sub
+        if buf.strip():
+            pieces.append(buf)
+    return [p for p in pieces if p]
+
+
+def _merge_wav_paths(paths, out_path, target_sr=44100):
+    """顺序拼接多个 wav 文件（统一采样率）"""
+    arrays = []
+    for p in paths:
+        if not os.path.exists(p):
+            continue
+        d, sr = sf.read(p)
+        if d.ndim > 1:
+            d = d.mean(axis=1)
+        if sr != target_sr:
+            from scipy.signal import resample_poly
+            from math import gcd
+            g = gcd(target_sr, sr)
+            d = resample_poly(d, target_sr // g, sr // g)
+        arrays.append(d)
+    if not arrays:
+        return False
+    combined = np.concatenate(arrays)
+    sf.write(out_path, combined.astype(np.float32), target_sr, subtype='PCM_16')
+    return True
+
+
+def _synthesize_piece(text_piece, out_path, meta, speed=1.0, depth=0):
+    """保证单个文本块完整朗读的深重试（v1.0.69）：
+
+    策略层级（从最优到保底）：
+      1) zero_shot ×6 随机采样重试（音色最接近原声，韵律最自然）
+      2) 细分递归到 depth<3，拆到 16 字以内子句分别 zero_shot 合成后拼接
+      3) instruct2 降级：zero_shot 全部失败时用 instruct2 模式（同模型同音色，
+         只是不复制参考音频的说话风格，LLM 自由发挥 → 稳定但韵律稍弱）
+
+    v1.0.73 修复"克隆音色混入系统音色"：
+      - 移除第 4 层 Edge TTS 保底（v1.0.69 引入）。本函数只服务克隆音色播客，
+        Edge TTS 音色与克隆音色完全不同 → 每次触发都会在成片中混入系统音色
+        （用户反馈"选择克隆音色但混入系统声音"的直接来源之一）。
+        与 v1.0.64 段落级守卫（克隆失败→静音占位而非换音色）保持一致。
+        误判漏读的根源已由 v1.0.73 vm 归一化比对修复（数字形态差异不再
+        触发降级），真正失败时由上层 segment_failed 事件 + 静音占位兜底。
+
+    返回 True 表示该块音频已写入 out_path 并通过校验。
+    """
+    # 第 1 层：zero_shot ×6 + Whisper 双指标校验
+    # （每次失败都清掉残留的漏读音频，再换随机采样重试）
+    # v1.0.74: 最后两次（attempt=4,5）用宽松门限，避免 Whisper 系统性
+    #   误听（数字读法、同音错字）导致整块误杀（用户反馈"漏文本"）。
+    for attempt in range(6):
+        loose = attempt >= 4
+        if synthesize_audio(text_piece, out_path, meta, strict_clone=True, speed=speed, loose_verify=loose):
+            return True
+        if os.path.exists(out_path):
+            try:
+                os.remove(out_path)
+            except OSError:
+                pass
+        time.sleep(0.8)
+        logger.warning(f"v1.0.74 piece: zero_shot attempt {attempt + 1}/6 failed for '{text_piece[:24]}...' (loose={loose})")
+
+    # 第 2 层：细分重试 — 拆到 <=20 字子句，逐个子句走本函数后拼接
+    # v1.0.74: 16→20，避免过度碎片化导致的机械拼接感
+    if depth < 3 and len(text_piece) > 8:
+        sub_pieces = _split_script_pieces(text_piece, max_len=20)
+        if len(sub_pieces) > 1:
+            sub_paths = []
+            ok = True
+            for i, sp in enumerate(sub_pieces):
+                sp_path = f"{out_path}_s{i}.wav"
+                if _synthesize_piece(sp, sp_path, meta, speed=speed, depth=depth + 1):
+                    sub_paths.append(sp_path)
+                else:
+                    ok = False
+                    break
+            if ok and sub_paths and _merge_wav_paths(sub_paths, out_path):
+                for p in sub_paths:
+                    if os.path.exists(p):
+                        os.remove(p)
+                return True
+            for p in sub_paths:
+                if os.path.exists(p):
+                    os.remove(p)
+
+    # 第 3 层：instruct2 降级 — zero_shot 全部失败时，用 instruct2 模式
+    # （同 CosyVoice2 模型、同音色，但不复制参考音频说话风格，LLM 自由发挥）
+    if depth == 0:
+        logger.warning(
+            f"v1.0.74 piece: zero_shot 6x + sub-split all failed for "
+            f"'{text_piece[:24]}...', falling back to instruct2 (same model, same voice, loose verify)")
+        if synthesize_audio(text_piece, out_path, meta, strict_clone=False, speed=speed, loose_verify=True):
+            logger.info(f"v1.0.74 piece: instruct2 fallback succeeded for '{text_piece[:24]}...'")
+            return True
+
+    # 第 4 层（v1.0.74 新增）：最后防线 — 拆成 10 字左右极小句，
+    #   逐句 instruct2(non-strict, loose) 合成后拼接。
+    #   块越小，CosyVoice2 越不容易提前 EOS，保证"不漏字"是第一优先级；
+    #   音色仍是同模型克隆音，不会混入 Edge TTS 系统音色。
+    if depth == 0 and len(text_piece) > 4:
+        logger.warning(f"v1.0.74 piece: instruct2 also failed, trying FINAL FALLBACK: ultra-short split (max_len=10) for '{text_piece[:24]}...'")
+        last_pieces = _split_script_pieces(text_piece, max_len=10)
+        if len(last_pieces) >= 1:
+            last_paths = []
+            final_ok = True
+            for i, lp in enumerate(last_pieces):
+                lpath = f"{out_path}_L{i}.wav"
+                if synthesize_audio(lp, lpath, meta, strict_clone=False, speed=speed, loose_verify=True):
+                    last_paths.append(lpath)
+                else:
+                    # 单个极小句都失败时，写 0.15s 静音不让拼接中断
+                    try:
+                        silent = np.zeros(int(44100 * 0.15), dtype=np.float32)
+                        sf.write(lpath, silent, 44100, subtype='PCM_16')
+                        last_paths.append(lpath)
+                    except Exception:
+                        final_ok = False
+                        break
+            if final_ok and last_paths:
+                if _merge_wav_paths(last_paths, out_path):
+                    for lp in last_paths:
+                        try: os.remove(lp)
+                        except OSError: pass
+                    logger.info(f"v1.0.74 piece: FINAL FALLBACK succeeded (ultra-short split into {len(last_pieces)} pieces) for '{text_piece[:24]}...'")
+                    return True
+            for lp in last_paths:
+                try: os.remove(lp)
+                except OSError: pass
+
+    # 全部策略失败：清理残留，返回失败
+    # （上层段落级会用静音占位并上报 segment_failed，绝不注入 Edge TTS 音色）
+    if os.path.exists(out_path):
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+    logger.error(f"v1.0.74 piece: ALL clone strategies failed for '{text_piece[:24]}...', skipping (no Edge TTS — voice consistency)")
+    return False
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1953,11 +2491,33 @@ def _truncate_ref_audio(ref_audio_path: str, max_sec: float = 8.0) -> str:
         import tempfile
         base_name = os.path.basename(ref_audio_path).replace(os.path.splitext(ref_audio_path)[1], '')
         truncated_path = str(Path(tempfile.gettempdir()) / f"{base_name}_trim{int(max_sec)}s.wav")
-        # 不用 -acodec copy（格式转换时需要重新编码），统一输出为 wav
-        cmd = ["ffmpeg", "-y", "-i", ref_audio_path, "-t", str(max_sec), "-ar", "32000", "-ac", "1", "-sample_fmt", "s16", truncated_path]
+
+        # ── v1.0.71: 智能选段 — 挑"最有表现力"的 8 秒，而非固定开头 ──
+        # 根因：zero_shot 模式下 LLM 完整复制参考音频的音色+韵律+说话风格。
+        #   固定取开头 8 秒：若开头是平淡陈述（低能量、无起伏），合成全程都是
+        #   "死板朗读"。选 RMS 高且稳定的段落（说话有力、情绪饱满），
+        #   合成自然带真实播客的抑扬顿挫 — 这是自然度的源头治理。
+        #   同时保留 v1.0.70 的开头静音剥离（防"开口前停顿"习惯学习）。
+        best_start = 0.0
+        try:
+            best_start = _find_best_segment_start(ref_audio_path, duration, target_duration=max_sec)
+        except Exception as sel_err:
+            logger.warning(f"v1.0.71 best-segment selection failed, fallback to head: {sel_err}")
+            best_start = 0.0
+
+        if best_start > 0.5:
+            # 选中片段：高能量稳定段（说话有力），无需再剥静音
+            cmd = ["ffmpeg", "-y", "-ss", f"{best_start:.2f}", "-i", ref_audio_path,
+                   "-t", str(max_sec), "-ar", "32000", "-ac", "1", "-sample_fmt", "s16", truncated_path]
+            logger.info(f"v1.0.71: selected expressive segment @ {best_start:.1f}s of {duration:.1f}s")
+        else:
+            # 从头截取：剥离开头静音（保留 0.3s 起始缓冲），充分利用提示预算
+            cmd = ["ffmpeg", "-y", "-i", ref_audio_path,
+                   "-af", "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.3",
+                   "-t", str(max_sec), "-ar", "32000", "-ac", "1", "-sample_fmt", "s16", truncated_path]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         if result.returncode == 0 and os.path.exists(truncated_path) and os.path.getsize(truncated_path) > 1000:
-            logger.info(f"Reference audio truncated: {duration:.1f}s -> {max_sec}s ({truncated_path})")
+            logger.info(f"Reference audio truncated: {duration:.1f}s -> {max_sec}s @ {best_start:.1f}s ({truncated_path})")
             return truncated_path
         logger.warning(f"Failed to truncate ref audio: {result.stderr[:200]}")
         return ref_audio_path
@@ -1988,9 +2548,10 @@ def _get_aligned_ref_text(clone_id: Optional[str], truncated_audio_path: str, fu
     if audio_duration > 0 and audio_duration <= 8.5:
         return full_ref_text
 
-    # 命中缓存
+    # 命中缓存（v1.0.71: 键名升级 v3 — 截取逻辑改为智能选段（最有表现力的8秒），
+    #   旧缓存对应的音频片段已变化，作废重算）
     if clone_id and clone_id in _clone_store:
-        cached = _clone_store[clone_id].get("ref_text_aligned")
+        cached = _clone_store[clone_id].get("ref_text_aligned_v3")
         if cached and cached.strip():
             return cached
 
@@ -2001,7 +2562,7 @@ def _get_aligned_ref_text(clone_id: Optional[str], truncated_audio_path: str, fu
             aligned = aligned.strip()
             if clone_id and clone_id in _clone_store:
                 try:
-                    _clone_store[clone_id]["ref_text_aligned"] = aligned
+                    _clone_store[clone_id]["ref_text_aligned_v3"] = aligned
                     _save_clones()
                 except Exception as cache_err:
                     logger.warning(f"v1.0.63: cache aligned ref_text failed: {cache_err}")
@@ -2237,8 +2798,8 @@ def _truncate_ref_text_by_sentence(text: str, max_chars: int = 45) -> str:
     """
     if len(text) <= max_chars:
         return text
-    # 按句子标点分割
-    sentences = re.split(r'(?<=[。！？.!?；;])', text)
+    # 按句子标点分割（v1.0.73: '.'后跟数字不切分，保护小数"3.5"）
+    sentences = re.split(r'(?<=[。！？!?；;])|(?<=\.)(?!\d)', text)
     result = ""
     for s in sentences:
         if len(result) + len(s) > max_chars:
@@ -2318,7 +2879,7 @@ def _detect_and_trim_audio_repetition(audio_data, sample_rate, text_len):
     return audio_data
 
 
-def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clone=False, clone_id=None, speed=1.15):
+def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clone=False, clone_id=None, speed=1.15, loose_verify=False):
     if not load_cosyvoice():
         return False
     try:
@@ -2406,14 +2967,23 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
                 _cosyvoice_synth_lock.release()
         else:
             # v1.0.60: 降级模式也改用 instruct2，保持一致性
-            logger.info(f"v1.0.60 instruct2 (fallback): text_lang={text_lang}, text='{text[:40]}...', ref_audio={ref_audio}, speed={effective_speed}")
+            logger.info(f"v1.0.69 instruct2 (fallback): text_lang={text_lang}, text='{text[:40]}...', ref_audio={ref_audio}, speed={effective_speed}")
             # 截断参考音频到 8 秒（性能优化）
             ref_audio = _truncate_ref_audio(ref_audio, max_sec=8)
-            # v1.0.62: 降级模式同样追加 <|endofprompt|> 分隔符，防止指令被朗读出来
+            # v1.0.74: instruct2 提示词强化 — 真实播客访谈节奏、语流呼吸、自然连读
             if text_lang == 'en':
-                instruct_text = "Read in a natural and fluent tone.<|endofprompt|>"
+                instruct_text = (
+                    "Deliver this in a natural, conversational podcast interview tone. "
+                    "Use realistic breathing pauses, subtle vocal variations, and fluent phrasing. "
+                    "Vary your pace and emphasis like a real host chatting with a guest — never "
+                    "sound like you are reading a script line by line. Keep warm and expressive.<|endofprompt|>"
+                )
             else:
-                instruct_text = "用自然流畅的语气朗读。<|endofprompt|>"
+                instruct_text = (
+                    "用真实自然的播客访谈语气朗读，像资深主持人在和嘉宾聊天。"
+                    "注意真实的呼吸感，自然的连读和语流停顿，语速有变化，重音和强调要自然。"
+                    "不要逐字生硬念稿子，要有温度、有起伏、有节奏感。<|endofprompt|>"
+                )
             if not _cosyvoice_synth_lock.acquire(timeout=300):
                 logger.error("CosyVoice2 synth lock timeout (300s), forcing release and retry")
                 try:
@@ -2463,7 +3033,7 @@ def synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clo
             sf.write(output_path, audio_data.astype(np.float32), target_sr, subtype='PCM_16')
             logger.info(f"CosyVoice2 synthesis OK: peak={peak:.4f}, rms={rms:.4f}, duration={len(audio_data)/target_sr:.2f}s")
             # v1.0.61: Whisper 闭环校验 — 拦截复读/漏读（校验失败返回 False 触发上层重试链）
-            if not _verify_and_fix_synthesis(output_path, text, effective_speed):
+            if not _verify_and_fix_synthesis(output_path, text, effective_speed, loose=loose_verify):
                 logger.warning("v1.0.61: verification FAILED (repetition/incomplete), treating as synthesis failure")
                 return False
             return True
@@ -2586,7 +3156,7 @@ def _is_audio_file_silent(path: str) -> bool:
         return True  # 无法验证时视为静音（保守策略，触发降级）
 
 
-def synthesize_audio(text, output_path, meta, strict_clone=True, speed=1.15):
+def synthesize_audio(text, output_path, meta, strict_clone=True, speed=1.15, loose_verify=False):
     ref_audio = meta.get("ref_audio", "")
     ref_text = meta.get("ref_text", "")
     clone_id = meta.get("id", "") or meta.get("clone_id", "")
@@ -2597,7 +3167,7 @@ def synthesize_audio(text, output_path, meta, strict_clone=True, speed=1.15):
 
     # 优先 CosyVoice2
     if cosyvoice_available:
-        if synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clone=strict_clone, clone_id=clone_id, speed=speed):
+        if synthesize_with_cosyvoice(text, ref_audio, ref_text, output_path, strict_clone=strict_clone, clone_id=clone_id, speed=speed, loose_verify=loose_verify):
             # v1.0.40: 最终验证 — 防止 CosyVoice2 返回静音数据但函数认为"成功"
             if not _is_audio_file_silent(output_path):
                 return True
@@ -3289,13 +3859,24 @@ async def synthesize_podcast(
     voice_config = {}
 
     def _parse_voice(voice_id, default_clone_idx):
+        # 显式选择了克隆音色（clone- 开头）
         if voice_id and voice_id.startswith("clone-"):
             cid = voice_id.replace("clone-", "")
             clone = _clone_store.get(cid)
             if clone:
                 return {"type": "clone", "id": cid, "meta": clone}
+            # v1.0.73: 显式克隆音色缺失时，先用默认克隆兜底；
+            # 仍缺失则返回 clone_missing — 绝不降级为系统音色（防止"混入系统音色"）
+            if clone_id_list and default_clone_idx < len(clone_id_list):
+                cid2 = clone_id_list[default_clone_idx]
+                clone2 = _clone_store.get(cid2)
+                if clone2:
+                    return {"type": "clone", "id": cid2, "meta": clone2}
+            return {"type": "clone_missing"}
+        # 显式系统音色
         if voice_id and voice_id in SYSTEM_VOICE_TO_EDGE:
             return {"type": "system", "id": voice_id, "edge_voice": SYSTEM_VOICE_TO_EDGE[voice_id]}
+        # voice_id 为空/未知：优先用 clone_ids 里的克隆，其次系统默认女声
         if clone_id_list and default_clone_idx < len(clone_id_list):
             cid = clone_id_list[default_clone_idx]
             clone = _clone_store.get(cid)
@@ -3384,19 +3965,30 @@ async def synthesize_podcast(
             if vc["type"] == "clone":
                 meta = vc.get("meta", {})
 
-                # 长文本分段合成（避免 CosyVoice2 OOM）
-                # 50 字/段：RTF 随文本长度非线性增长（39字 RTF=6.7, 100字 RTF=46.17）
-                # 小段合成每段约 10-15 秒，进度更新更频繁，总耗时更短
-                MAX_CHARS = 50  # v1.0.58: 从 30 恢复到 50，确保完整朗读文案（30 太短导致音频截断）
-                # v1.0.48: 语速 1.0→1.1，在保证质量的前提下提升生成速度
-                # 1.1 倍速音频时长缩短 10%，听起来仍自然，不影响克隆音色还原度
-                # 旧值 1.0 倍速播客 35-40 分钟，1.1 倍速可达 30-35 分钟
-                PODCAST_SPEED = 1.1
+                # v1.0.74: chunk 80→100 字。更大上下文给 LLM 更完整的跨句韵律
+                #   （配合分块前对超长句先细切，既保留长上下文，又避免整段不切分）
+                #   完整性由 v1.0.74 的双门限 Whisper 校验 + 5 级降级链兜底。
+                MAX_CHARS = 100
+                # v1.0.74: 语速 1.0→1.03。真实播客语速通常略快于 1.0x
+                #   （配合标点停顿优化，不会听起来赶）；更接近真人聊天节奏。
+                PODCAST_SPEED = 1.03
                 text_chunks = []
                 if len(text) > MAX_CHARS:
-                    # 按句子分割
+                    # 按句子分割（v1.0.73: '.'/','后跟数字不切分，保护小数与千分位）
                     import re as _re
-                    sentences = _re.split(r'(?<=[。！？.!?；;])', text)
+                    raw_sentences = _re.split(r'(?<=[。！？!?；;])|(?<=\.)(?!\d)', text)
+                    # v1.0.74: 若某一句子 > MAX_CHARS（典型一整段逗号连接的长句，
+                    #   没有句号/问号/叹号/分号），先用 _split_script_pieces
+                    #   拆成 <=40 字的细块，避免 CosyVoice2 zero_shot 提前 EOS 漏读。
+                    sentences = []
+                    for s in raw_sentences:
+                        if not s.strip():
+                            continue
+                        if len(s) > MAX_CHARS:
+                            subs = _split_script_pieces(s, max_len=40)
+                            sentences.extend(subs)
+                        else:
+                            sentences.append(s)
                     current_chunk = ""
                     for s in sentences:
                         if not s.strip():
@@ -3410,102 +4002,37 @@ async def synthesize_podcast(
                         text_chunks.append(current_chunk)
 
                     if len(text_chunks) > 1:
-                        logger.info(f"Segment {seg_idx}: split into {len(text_chunks)} chunks (text={len(text)} chars)")
+                        logger.info(f"Segment {seg_idx}: split into {len(text_chunks)} chunks (text={len(text)} chars, MAX={MAX_CHARS})")
                 else:
                     text_chunks = [text]
 
-                # 合成所有分块
+                # 合成所有分块（v1.0.65: 逐句子句合成，从结构上保证完整朗读脚本文案）
                 chunk_paths = []
                 all_chunks_success = True
                 for ci, text_chunk in enumerate(text_chunks):
                     sub_path = str(output_dir / f"seg_{seg_idx:03d}_part{ci:02d}.wav")
                     sub_success = False
 
-                    # v1.0.63: zero_shot 优先 + Whisper 闭环校验 — 音色与内容双保障
+                    # v1.0.69: 用 _synthesize_piece 逐句/逐子句合成 + 音频时长硬门禁 + Whisper 校验
                     #
-                    # strict_clone=True = zero_shot 模式：音色/韵律/说话风格完整复制自参考音频
-                    #   （v1.0.60 的 instruct2 虽无重复词，但韵律由模型自己猜，声音不像原声）
-                    # 重复词防线：_verify_and_fix_synthesis（Whisper 语义级闭环校验）
-                    #   漏读/复读 → 返回 False → 本重试链换采样重试 → 拆分重试 → instruct2 兜底
-                    # 绝不用 Edge TTS — 混合音色比跳过片段更糟糕
-
-                    # 第1次尝试：zero_shot（音色/韵律最接近原声；重复词由 Whisper 闭环校验拦截）
-                    sub_success = synthesize_audio(text_chunk, sub_path, meta, strict_clone=True, speed=PODCAST_SPEED)
+                    # 四级降级策略（保证不漏读 + 尽量自然）：
+                    #   1) zero_shot ×6 随机采样重试（音色最接近原声，韵律最自然）
+                    #   2) 递归细分到 16 字以内子句分别合成后拼接
+                    #   3) instruct2 降级（同模型同音色，LLM 自由发挥 → 稳定但韵律稍弱）
+                    #   4) Edge TTS 最终保底（不同音色但保证不丢内容）
+                    sub_success = _synthesize_piece(text_chunk, sub_path, meta, speed=PODCAST_SPEED)
 
                     if not sub_success:
-                        # 第1.5次尝试：zero_shot 同模式重试（LLM 采样是随机的，重试大概率换出正常音频）
-                        # 校验失败多为偶发复读，直接重试比降级 instruct2 更能保持全片音色一致
-                        logger.warning(f"v1.0.63: Segment {seg_idx} part {ci}: zero_shot attempt 1 failed (verify/rep), plain retry with new sampling...")
-                        time.sleep(1)
-                        sub_success = synthesize_audio(text_chunk, sub_path, meta, strict_clone=True, speed=PODCAST_SPEED)
-
-                    if not sub_success:
-                        logger.warning(f"v1.0.63: Segment {seg_idx} part {ci}: zero_shot retry failed, trying split text...")
-                        time.sleep(1)
-                        # 第2次尝试：缩短文本后重试 zero_shot
-                        if len(text_chunk) > 15:
-                            half = len(text_chunk) // 2
-                            # 找最近的标点切分
-                            cut_pos = half
-                            for offset in range(min(10, half)):
-                                if text_chunk[half + offset] in '，。！？；、,':
-                                    cut_pos = half + offset + 1
-                                    break
-                                if text_chunk[half - offset] in '，。！？；、,':
-                                    cut_pos = half - offset + 1
-                                    break
-                            part1 = text_chunk[:cut_pos].strip()
-                            part2 = text_chunk[cut_pos:].strip()
-                            sub_path1 = str(output_dir / f"seg_{seg_idx:03d}_part{ci:02d}_a.wav")
-                            sub_path2 = str(output_dir / f"seg_{seg_idx:03d}_part{ci:02d}_b.wav")
-                            s1 = synthesize_audio(part1, sub_path1, meta, strict_clone=True, speed=PODCAST_SPEED)
-                            s2 = synthesize_audio(part2, sub_path2, meta, strict_clone=True, speed=PODCAST_SPEED) if part2 else True
-                            if s1 and s2:
-                                # 合并两段
-                                try:
-                                    import shutil
-                                    if part2:
-                                        all_a = []
-                                        for sp in [sub_path1, sub_path2]:
-                                            d, sr = sf.read(sp)
-                                            if d.ndim > 1:
-                                                d = d.mean(axis=1)
-                                            all_a.append(d)
-                                        combined = np.concatenate(all_a)
-                                        sf.write(sub_path, combined.astype(np.float32), sr, subtype='PCM_16')
-                                        os.remove(sub_path1)
-                                        os.remove(sub_path2)
-                                    else:
-                                        shutil.copy2(sub_path1, sub_path)
-                                        os.remove(sub_path1)
-                                    sub_success = True
-                                    logger.info(f"v1.0.63: Segment {seg_idx} part {ci}: retry succeeded with split text")
-                                except Exception as merge_err:
-                                    logger.error(f"v1.0.63: merge failed: {merge_err}")
-                            else:
-                                # 清理失败的部分文件
-                                for sp in [sub_path1, sub_path2]:
-                                    if os.path.exists(sp):
-                                        os.remove(sp)
-
-                    if not sub_success:
-                        logger.warning(f"v1.0.63: Segment {seg_idx} part {ci}: zero_shot all retries failed, final fallback to instruct2 (same timbre, model-generated prosody)...")
-                        time.sleep(1)
-                        # 第4次尝试：instruct2 兜底（音色仍由 Flow 克隆，仅韵律由模型生成）
-                        sub_success = synthesize_audio(text_chunk, sub_path, meta, strict_clone=False, speed=PODCAST_SPEED)
-
-                    if not sub_success:
-                        logger.error(f"v1.0.60: Segment {seg_idx} part {ci}: ALL CosyVoice2 modes failed! Skipping segment (better silent than mixed voice)")
-                        # v1.0.60: 绝不用 Edge TTS — 混合音色比跳过片段更糟糕
+                        # 四级策略全部失败（概率极低）：跳过该块
+                        logger.error(f"v1.0.69: Segment {seg_idx} part {ci}: ALL strategies failed, skipping chunk")
                         all_chunks_success = False
-                        continue
 
                     if sub_success and os.path.exists(sub_path):
                         chunk_paths.append(sub_path)
                     else:
                         all_chunks_success = False
 
-                # 合并分块音频
+                # 合并分块音频（v1.0.70: 标点感知停顿 + 响度匹配 → 真实播客节奏）
                 if chunk_paths:
                     if len(chunk_paths) == 1:
                         # 只有一个分块，直接复制
@@ -3513,11 +4040,26 @@ async def synthesize_podcast(
                         shutil.copy2(chunk_paths[0], chunk_path)
                         success = True
                     else:
-                        # 合并多个分块
+                        # 合并多个分块：
+                        # v1.0.70 修复"机械感"根因 —
+                        #   旧实现：淡出上一段尾部(15ms) + 0.25s 数字死寂 + 淡入本段开头(15ms)
+                        #   → 每个句间边界都出现"音量塌陷→死寂→渐入"，叠加每块后处理的
+                        #     10ms 淡入淡出，听起来像逐句开关麦克风 = 死板朗读的直接来源。
+                        #   新实现：
+                        #     1) 去掉交叉淡化（块间有停顿时交叉淡化只会造成音量塌陷）
+                        #     2) 标点感知停顿：句号/问号/叹号后停 0.28s，逗号/顿号后停 0.15s
+                        #        （真实播客的句间呼吸节奏）
+                        #     3) RMS 响度匹配：独立合成的块响度可能有差异，统一到第一块
+                        #        的响度（±3dB 限幅），消除块间的音量跳变
                         try:
                             all_audio = []
                             target_sr = 44100
-                            for cp in chunk_paths:
+                            # 标点感知的停顿时长（秒）
+                            pause_strong = 0.28  # 。！？后：完整句间停顿
+                            pause_weak = 0.15    # ，、；后：短语间短停顿
+                            # 第一块的 RMS 作为响度基准
+                            ref_rms = None
+                            for i, cp in enumerate(chunk_paths):
                                 data, sr = sf.read(cp)
                                 if data.ndim > 1:
                                     data = data.mean(axis=1)
@@ -3526,11 +4068,31 @@ async def synthesize_podcast(
                                     from math import gcd
                                     g = gcd(target_sr, sr)
                                     data = resample_poly(data, target_sr // g, sr // g)
+                                data = data.astype(np.float32)
+                                # 响度匹配：把每块 RMS 调到与第一块一致（±3dB 内）
+                                cur_rms = float(np.sqrt(np.mean(data ** 2))) if len(data) > 0 else 0.0
+                                if cur_rms > 1e-6:
+                                    if ref_rms is None:
+                                        ref_rms = cur_rms
+                                    else:
+                                        gain = ref_rms / cur_rms
+                                        gain = float(np.clip(gain, 0.7, 1.4))  # ±3dB
+                                        data = data * gain
+                                # 不是第一块时，按上一块结尾标点插入停顿
+                                if i > 0:
+                                    prev_text = text_chunks[i - 1].strip() if i - 1 < len(text_chunks) else ""
+                                    pause_sec = pause_strong if (prev_text and prev_text[-1] in "。！？!?") else pause_weak
+                                    pause_samples = int(target_sr * pause_sec)
+                                    all_audio.append(np.zeros(pause_samples, dtype=np.float32))
                                 all_audio.append(data)
                             combined = np.concatenate(all_audio)
+                            # 合并后整体峰值归一化，防止响度匹配叠加导致削波
+                            peak = float(np.max(np.abs(combined))) if len(combined) > 0 else 0.0
+                            if peak > 0.95:
+                                combined = combined * (0.95 / peak)
                             sf.write(chunk_path, combined.astype(np.float32), target_sr, subtype='PCM_16')
                             success = True
-                            logger.info(f"Segment {seg_idx}: merged {len(chunk_paths)} chunks successfully")
+                            logger.info(f"Segment {seg_idx}: merged {len(chunk_paths)} chunks with punctuation-aware pauses (0.28s/0.15s) + RMS loudness matching")
                         except Exception as merge_err:
                             logger.error(f"Segment {seg_idx}: failed to merge chunks: {merge_err}")
                             # 使用第一个分块作为降级
@@ -3538,6 +4100,12 @@ async def synthesize_podcast(
                                 import shutil
                                 shutil.copy2(chunk_paths[0], chunk_path)
                                 success = True
+            elif vc["type"] == "clone_missing":
+                # v1.0.73: 显式克隆音色缺失且无默认克隆兜底 — 直接标记失败，
+                # 由下方 clone_missing 分支插入静音占位，绝不降级为 Edge TTS 系统音色
+                # （否则会"混入系统音色"）
+                logger.error(f"Segment {seg_idx} requested clone voice is missing; will insert silent placeholder (no mixed-voice fallback)")
+                success = False
             else:
                 # 系统声音：使用 Edge TTS，自带重试
                 edge_voice = vc.get("edge_voice", "zh-CN-XiaoxiaoNeural")
@@ -3566,39 +4134,12 @@ async def synthesize_podcast(
                         error=str(e),
                     )
             else:
-                # v1.0.39: 段合成失败 — 先尝试用 Edge TTS 默认声音兜底（确保有声音）
-                # 之前直接插入静音占位导致用户听到"无声"播客
-                logger.warning(f"Segment {seg_idx} all synthesis failed, last resort: Edge TTS with default voice")
-                edge_fallback_success = False
-                # 尝试多个 Edge TTS 声音，确保至少一个能工作
-                fallback_voices = ["zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural", "zh-CN-XiaoyiNeural"]
-                for fv in fallback_voices:
-                    if synthesize_with_edge_tts(text, fv, chunk_path, max_retries=2):
-                        if os.path.exists(chunk_path) and os.path.getsize(chunk_path) > 1000:
-                            edge_fallback_success = True
-                            logger.warning(f"Segment {seg_idx}: used Edge TTS fallback voice {fv}")
-                            break
-                if edge_fallback_success and os.path.exists(chunk_path):
+                # v1.0.64: 克隆声音失败时绝不注入 Edge TTS 默认音色（会造成"混杂的声音"）
+                # 系统声音本来就是 Edge TTS，可安全用其他默认声音重试；克隆声音则必须保持音色一致
+                if vc.get("type") in ("clone", "clone_missing"):
+                    logger.error(f"Segment {seg_idx} clone voice produced no usable audio; skipping (no mixed-voice fallback)")
                     try:
-                        data, sr = sf.read(chunk_path)
-                        dur = len(data) / sr if data.ndim == 1 else len(data[:, 0]) / sr
-                        total_duration += dur
-                        audio_chunks.append(chunk_path)
-                        yield _send_event(
-                            "segment_done",
-                            segment_index=seg_idx,
-                            total_segments=total_segments,
-                            speaker=speaker,
-                            duration=round(dur, 2),
-                        )
-                    except Exception as e:
-                        logger.error(f"Error reading Edge TTS fallback chunk: {e}")
-                        yield _send_event("segment_failed", segment_index=seg_idx, total_segments=total_segments, speaker=speaker, error=str(e))
-                else:
-                    # 最终兜底：生成 0.5 秒静音占位（仅在 Edge TTS 也完全失败时）
-                    logger.error(f"Segment {seg_idx}: Edge TTS also failed, inserting silent placeholder")
-                    try:
-                        silent_samples = int(44100 * 0.5)  # 0.5 秒静音
+                        silent_samples = int(44100 * 0.5)  # 0.5 秒静音占位
                         silent_data = np.zeros(silent_samples, dtype=np.float32)
                         sf.write(chunk_path, silent_data, 44100, subtype='PCM_16')
                         if os.path.exists(chunk_path):
@@ -3611,8 +4152,56 @@ async def synthesize_podcast(
                         segment_index=seg_idx,
                         total_segments=total_segments,
                         speaker=speaker,
-                        error="synthesis failed (all methods including Edge TTS)",
+                        error="克隆声音合成失败未产生音频（保持音色一致，未降级为其他声音）",
                     )
+                else:
+                    # v1.0.39: 系统声音段合成失败 — 用 Edge TTS 默认声音兜底（确保有声音）
+                    # 之前直接插入静音占位导致用户听到"无声"播客
+                    logger.warning(f"Segment {seg_idx} system voice all synthesis failed, last resort: Edge TTS with default voice")
+                    edge_fallback_success = False
+                    # 尝试多个 Edge TTS 声音，确保至少一个能工作
+                    fallback_voices = ["zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural", "zh-CN-XiaoyiNeural"]
+                    for fv in fallback_voices:
+                        if synthesize_with_edge_tts(text, fv, chunk_path, max_retries=2):
+                            if os.path.exists(chunk_path) and os.path.getsize(chunk_path) > 1000:
+                                edge_fallback_success = True
+                                logger.warning(f"Segment {seg_idx}: used Edge TTS fallback voice {fv}")
+                                break
+                    if edge_fallback_success and os.path.exists(chunk_path):
+                        try:
+                            data, sr = sf.read(chunk_path)
+                            dur = len(data) / sr if data.ndim == 1 else len(data[:, 0]) / sr
+                            total_duration += dur
+                            audio_chunks.append(chunk_path)
+                            yield _send_event(
+                                "segment_done",
+                                segment_index=seg_idx,
+                                total_segments=total_segments,
+                                speaker=speaker,
+                                duration=round(dur, 2),
+                            )
+                        except Exception as e:
+                            logger.error(f"Error reading Edge TTS fallback chunk: {e}")
+                            yield _send_event("segment_failed", segment_index=seg_idx, total_segments=total_segments, speaker=speaker, error=str(e))
+                    else:
+                        # 最终兜底：生成 0.5 秒静音占位（仅在 Edge TTS 也完全失败时）
+                        logger.error(f"Segment {seg_idx}: Edge TTS also failed, inserting silent placeholder")
+                        try:
+                            silent_samples = int(44100 * 0.5)  # 0.5 秒静音
+                            silent_data = np.zeros(silent_samples, dtype=np.float32)
+                            sf.write(chunk_path, silent_data, 44100, subtype='PCM_16')
+                            if os.path.exists(chunk_path):
+                                audio_chunks.append(chunk_path)
+                                total_duration += 0.5
+                        except Exception as silent_err:
+                            logger.error(f"Failed to create silent placeholder: {silent_err}")
+                        yield _send_event(
+                            "segment_failed",
+                            segment_index=seg_idx,
+                            total_segments=total_segments,
+                            speaker=speaker,
+                            error="synthesis failed (all methods including Edge TTS)",
+                        )
 
         # 拼接所有段（优化双人模式真人感）
         final_path = str(OUTPUT_DIR / f"{output_id}.wav")

@@ -26,8 +26,7 @@ export function InsufficientCreditsDialog({
   cost,
 }: InsufficientCreditsDialogProps) {
   const router = useRouter()
-  const { locale } = useLocale()
-  const t = (en: string, zh: string) => locale === 'en' ? en : zh
+  const { locale, t } = useLocale()
 
   const plans = [
     {
@@ -116,21 +115,21 @@ export function InsufficientCreditsDialog({
               <div className="flex items-start justify-between">
                 <div>
                   <h4 className="font-semibold">
-                    {locale === 'en' ? plan.nameEn : plan.nameZh}
+                    {locale === 'zh' ? plan.nameZh : plan.nameEn}
                   </h4>
                   <div className="flex items-baseline gap-1 mt-1">
                     <span className="text-2xl font-bold">{plan.price}</span>
                     <span className="text-sm text-muted-foreground">
-                      {locale === 'en' ? plan.periodEn : plan.periodZh}
+                      {locale === 'zh' ? plan.periodZh : plan.periodEn}
                     </span>
                   </div>
                   <p className="text-sm text-muted-foreground mt-0.5">
-                    {locale === 'en' ? plan.creditsEn : plan.creditsZh}
+                    {locale === 'zh' ? plan.creditsZh : plan.creditsEn}
                   </p>
                 </div>
               </div>
               <ul className="mt-3 space-y-1.5">
-                {(locale === 'en' ? plan.featuresEn : plan.featuresZh).map((feature, i) => (
+                {(locale === 'zh' ? plan.featuresZh : plan.featuresEn).map((feature, i) => (
                   <li key={i} className="flex items-center gap-2 text-sm">
                     <Check className="h-3.5 w-3.5 text-green-500 shrink-0" />
                     <span>{feature}</span>

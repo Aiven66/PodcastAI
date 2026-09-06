@@ -167,7 +167,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const origin = request.headers.get('origin') || 'http://localhost:3000';
+    // origin 缺失时（如服务端调用）回退正式域名
+    const origin =
+      request.headers.get('origin') ||
+      process.env.NEXT_PUBLIC_APP_URL ||
+      'https://podcastai.clipopai.com';
     const successUrl = `${origin}/pricing?checkout=success`;
     const customerEmail = userEmail || '';
 

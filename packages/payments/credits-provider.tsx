@@ -28,7 +28,7 @@ import {
   isSupabaseConfigured,
   type AppConfig,
   type AppUser,
-} from '@clipop/core';
+} from '../core';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

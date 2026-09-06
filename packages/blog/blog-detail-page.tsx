@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { useAppConfig, type BlogPost, type Locale } from '@clipop/core';
+import { useAppConfig, type BlogPost, type Locale } from '../core';
 import { fetchBlogPost } from './client';
 import { sanitizeAndScopeHtml } from './sanitize';
 

@@ -280,7 +280,8 @@ async function fetchUserFromDb(
 ): Promise<AppUser | null> {
   try {
     const client = getClientWithToken(config, token);
-    const { data: authUser } = await client.auth.getUser(token);
+    const { data } = await client.auth.getUser(token);
+    const authUser = data?.user ?? null;
     if (!authUser) return null;
 
     const { data: row } = await client
@@ -306,7 +307,7 @@ async function fetchUserFromDb(
       name:
         (authUser.user_metadata?.name as string | undefined) ||
         authUser.email?.split('@')[0] ||
-        null,
+        '',
       role: 'user',
       avatarUrl:
         (authUser.user_metadata?.avatar_url as string | undefined) || null,
@@ -434,7 +435,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
               name:
                 (session.user.user_metadata?.name as string | undefined) ||
                 email.split('@')[0] ||
-                null,
+                '',
               role: 'user',
               avatarUrl:
                 (session.user.user_metadata?.avatar_url as string | undefined) ||

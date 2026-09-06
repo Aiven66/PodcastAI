@@ -283,7 +283,150 @@
     }
     .auth-link:hover { color: var(--foreground); }
   </style>
-</head>
+
+<style id="dark-theme">
+  /* ═══════════════════════════════════════════════════════════════
+     v1.0.76 深色模式（桌面端）
+     <html class="dark"> 时生效：语义变量覆盖 + 集中式覆盖硬编码 class。
+     覆盖思路：按"语义层→亮色专用class层→交互状态层"逐层，每条规则都
+     以 .dark 为父选择器以提升特异性（0,2,0），稳定压过 Tailwind CDN 产出。
+  ═══════════════════════════════════════════════════════════════ */
+  .dark {
+    color-scheme: dark;
+    --background: oklch(0.15 0.02 195);
+    --foreground: oklch(0.93 0.015 190);
+    --card: oklch(0.19 0.022 195);
+    --card-foreground: oklch(0.93 0.015 190);
+    --popover: oklch(0.19 0.022 195);
+    --popover-foreground: oklch(0.93 0.015 190);
+    --primary: oklch(0.55 0.13 185);
+    --primary-foreground: oklch(0.99 0.02 185);
+    --secondary: oklch(0.25 0.03 195);
+    --secondary-foreground: oklch(0.86 0.03 190);
+    --muted: oklch(0.22 0.022 195);
+    --muted-foreground: oklch(0.62 0.03 195);
+    --accent: oklch(0.25 0.03 195);
+    --accent-foreground: oklch(0.90 0.03 185);
+    --destructive: oklch(0.65 0.17 28);
+    --border: oklch(0.27 0.02 195);
+    --input: oklch(0.30 0.022 195);
+    --ring: oklch(0.55 0.13 185 / 40%);
+  }
+
+  /* 滚动条 */
+  .dark ::-webkit-scrollbar-thumb { background: oklch(0.35 0.02 195); }
+  .dark ::-webkit-scrollbar-thumb:hover { background: oklch(0.45 0.03 195); }
+
+  /* ── A. 基础表面与语义色 ── */
+  .dark .bg-white { background-color: oklch(0.19 0.022 195); }
+  .dark .bg-white\/80 { background-color: oklch(0.19 0.022 195 / 0.78); }
+  .dark .bg-stone-50 { background-color: oklch(0.15 0.02 195); }
+  .dark .bg-stone-100 { background-color: oklch(0.24 0.022 195); }
+  .dark .bg-stone-200 { background-color: oklch(0.30 0.022 195); }
+  .dark .bg-stone-300 { background-color: oklch(0.36 0.022 195); }
+  .dark .bg-stone-400 { background-color: oklch(0.42 0.022 195); }
+
+  /* 截图问题 #1：LOGO 区渐变 + gradient-primary + gradient-text 暗度过高看不清 */
+  .dark .bg-gradient-to-br.from-primary-500.to-primary-700,
+  .dark .bg-gradient-to-br.from-primary-600.to-purple-600 {
+    background-image: linear-gradient(to bottom right, oklch(0.68 0.14 185), oklch(0.70 0.18 295)) !important;
+  }
+  .dark .gradient-primary,
+  .dark .gradient-text {
+    background: linear-gradient(to right, oklch(0.72 0.14 185), oklch(0.74 0.20 295));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* primary-50（激活态）深色下调和 */
+  .dark .bg-primary-50 { background-color: oklch(0.24 0.04 185 / 0.45); }
+  .dark .from-primary-50 { --tw-gradient-from: oklch(0.24 0.04 185 / 0.5); }
+  .dark .to-purple-50  { --tw-gradient-to:   oklch(0.24 0.05 295 / 0.5); }
+
+  /* ── B. 文本色 ── */
+  .dark .text-stone-400 { color: oklch(0.55 0.02 195); }
+  .dark .text-stone-500 { color: oklch(0.66 0.03 195); }
+  .dark .text-stone-600 { color: oklch(0.76 0.03 195); }
+  .dark .text-stone-700 { color: oklch(0.85 0.02 195); }
+  .dark .text-stone-900 { color: oklch(0.94 0.015 190); }
+  .dark .text-white    { color: #ffffff; }
+  .dark .text-primary-700 { color: oklch(0.72 0.12 185); }
+  .dark .text-primary-600 { color: oklch(0.65 0.14 185); }
+  .dark .hover\:text-stone-600:hover { color: oklch(0.85 0.02 195); }
+  .dark .hover\:text-stone-200:hover { color: oklch(0.70 0.03 195); }
+  .dark .hover\:text-primary-700:hover { color: oklch(0.72 0.12 185); }
+  .dark .hover\:text-primary-600:hover { color: oklch(0.65 0.14 185); }
+  .dark .hover\:text-red-400:hover { color: oklch(0.72 0.18 28); }
+
+  /* ── C. 边框色 ── */
+  .dark .border-stone-200 { border-color: oklch(0.27 0.02 195); }
+  .dark .border-stone-300 { border-color: oklch(0.34 0.022 195); }
+  .dark .border-stone-400 { border-color: oklch(0.42 0.022 195); }
+  .dark .hover\:border-stone-300:hover { border-color: oklch(0.40 0.022 195); }
+  .dark .hover\:border-stone-400:hover { border-color: oklch(0.46 0.022 195); }
+  .dark .hover\:border-primary-600:hover { border-color: oklch(0.65 0.14 185); }
+  .dark .focus\:border-primary-600:focus { border-color: oklch(0.65 0.14 185); }
+
+  /* ── D. 交互状态 hover/focus bg ── */
+  .dark .hover\:bg-stone-100:hover { background-color: oklch(0.30 0.022 195); }
+  .dark .hover\:bg-stone-200:hover { background-color: oklch(0.34 0.022 195); }
+  .dark .hover\:bg-stone-300:hover { background-color: oklch(0.40 0.022 195); }
+  .dark .hover\:bg-primary-500:hover { background-color: oklch(0.60 0.14 185); }
+  .dark .hover\:bg-primary-700:hover { background-color: oklch(0.52 0.13 185); }
+  .dark .hover\:bg-red-500:hover   { background-color: oklch(0.62 0.20 28); }
+
+  /* placeholder */
+  .dark ::placeholder { color: oklch(0.50 0.02 195); opacity: 1; }
+
+  /* ── E. 登录覆盖层深色渐变 ── */
+  .dark #auth-overlay {
+    background: linear-gradient(135deg, oklch(0.145 0.02 195) 0%, oklch(0.20 0.025 200) 100%);
+  }
+  .dark .auth-card {
+    background: oklch(0.21 0.022 195);
+    box-shadow: 0 10px 40px -10px oklch(0 0 0 / 0.6);
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     v1.0.76 补漏：修复 3 处视觉违和（用户截图反馈）
+  ═══════════════════════════════════════════════════════════════ */
+
+  /* E-1. OfflineBanner（截图顶栏黄色块）：amber-50/amber-200 在暗色下是亮黄背景，
+     改为暗琥珀警示色（符合暗色语义） */
+  .dark .bg-amber-50 { background-color: oklch(0.26 0.04 80); }
+  .dark .bg-amber-50.text-amber-700 { color: oklch(0.78 0.10 80); }
+  .dark .border-amber-200 { border-color: oklch(0.36 0.05 80); }
+  .dark .bg-amber-500 { background-color: oklch(0.70 0.14 80); }
+  .dark .text-amber-700 { color: oklch(0.78 0.10 80); }
+  .dark .text-amber-800 { color: oklch(0.84 0.09 76); }
+
+  /* E-2. 模型就绪（截图中"模型已就绪"绿色块）：green-50/green-200 在暗色下刺眼
+     → 改为暗绿成功色（绿紫主色调保持一致） */
+  .dark .bg-green-50 { background-color: oklch(0.24 0.04 165); }
+  .dark .bg-green-50.text-green-700 { color: oklch(0.72 0.14 165); }
+  .dark .border-green-200 { border-color: oklch(0.34 0.05 165); }
+  .dark .bg-green-500 { background-color: oklch(0.62 0.15 165); }
+  .dark .bg-green-600 { background-color: oklch(0.57 0.14 165); }
+  .dark .text-green-600 { color: oklch(0.64 0.15 165); }
+  .dark .text-green-700 { color: oklch(0.72 0.14 165); }
+  .dark .text-green-900 { color: oklch(0.88 0.07 165); }
+
+  /* E-3. 失败/错误态红色块（合成失败告警、模型缺失 badge） */
+  .dark .bg-red-50 { background-color: oklch(0.24 0.04 25); }
+  .dark .bg-red-50.text-red-700 { color: oklch(0.70 0.16 25); }
+  .dark .border-red-200 { border-color: oklch(0.34 0.06 25); }
+  .dark .bg-red-500 { background-color: oklch(0.62 0.20 28); }
+  .dark .bg-red-600 { background-color: oklch(0.58 0.20 28); }
+  .dark .text-red-600 { color: oklch(0.62 0.20 28); }
+  .dark .text-red-700 { color: oklch(0.70 0.16 25); }
+  .dark .text-red-800 { color: oklch(0.80 0.12 25); }
+  .dark .hover\:text-red-600:hover { color: oklch(0.62 0.20 28); }
+
+  /* 辅助：光晕与主渐变 logo 卡 */
+  .dark .glow-primary { background: oklch(0.55 0.13 185 / 0.16); }
+  .dark .glow-purple  { background: oklch(0.55 0.22 295 / 0.14); }
+</style></head>
 <body>
   <!-- v1.0.31: 登录覆盖层（无 token 时显示，阻止访问主应用） -->
   <div id="auth-overlay">

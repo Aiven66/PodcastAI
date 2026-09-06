@@ -11,7 +11,7 @@
  */
 
 import { useState } from 'react';
-import { useAppConfig, type PlanConfig } from '@clipop/core';
+import { useAppConfig, type PlanConfig } from '../core';
 import { PaymentModal } from './payment-modal';
 
 export interface PricingPageProps {

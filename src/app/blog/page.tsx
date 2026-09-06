@@ -5,8 +5,9 @@ import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Calendar, ArrowRight, Loader2 } from 'lucide-react'
+import { Calendar, ArrowRight, Loader2, PenSquare } from 'lucide-react'
 import { useSupabase } from '@/components/supabase-provider'
+import { useAuth } from '@/lib/auth-context'
 import { useLocale } from '@/components/locale-provider'
 import { format } from 'date-fns'
 
@@ -22,7 +23,8 @@ interface Blog {
 
 export default function BlogPage() {
   const { supabase } = useSupabase()
-  const { locale } = useLocale()
+  const { locale, t } = useLocale()
+  const { user } = useAuth()
   const [blogs, setBlogs] = useState<Blog[]>([])
   const [loading, setLoading] = useState(true)
   const [initialized, setInitialized] = useState(false)
@@ -50,7 +52,6 @@ export default function BlogPage() {
     }
   }
 
-  const t = (en: string, zh: string) => locale === 'en' ? en : zh
 
   const categories = [
     { id: 'all', name: 'All', nameZh: '全部' },
@@ -91,6 +92,16 @@ export default function BlogPage() {
               '探索AI播客创作的技巧、教程和新闻'
             )}
           </p>
+          {user?.role === 'admin' && (
+            <div className="mt-6">
+              <Button variant="outline" asChild>
+                <Link href="/admin?tab=analytics">
+                  <PenSquare className="h-4 w-4 mr-2" />
+                  {t('Manage Blog', '管理博客')}
+                </Link>
+              </Button>
+            </div>
+          )}
         </div>
 
         {/* Category Filter */}
@@ -102,7 +113,7 @@ export default function BlogPage() {
               size="sm"
               onClick={() => setSelectedCategory(cat.id)}
             >
-              {locale === 'en' ? cat.name : cat.nameZh}
+              {locale === 'zh' ? cat.nameZh : cat.name}
             </Button>
           ))}
         </div>

@@ -36,6 +36,7 @@ import {
   Mic2,
   Activity,
   LayoutDashboard,
+  TrendingUp,
 } from 'lucide-react'
 import { useAuth } from '@/lib/auth-context'
 import { useLocale } from '@/components/locale-provider'
@@ -45,6 +46,9 @@ import {
   DAILY_FREE_CREDITS,
 } from '@/hooks/use-credits'
 import { format } from 'date-fns'
+import { AdminDashboard } from '@packages/admin/admin-dashboard'
+import { AdminBlogManager } from '@packages/blog/admin-blog-manager'
+import { AuthProvider, useAuth as usePackageAuth } from '@packages/auth/auth-provider'
 
 // ============= Types =============
 interface RegisteredUser {
@@ -96,6 +100,13 @@ const DEMO_REGISTERED_USERS_KEY = 'podcastai_registered_users'
 const PODCAST_HISTORY_KEY = 'podcastHistory'
 const ADMIN_BLOGS_KEY = 'admin_blogs'
 const ADMIN_EMAIL = 'admin@126.com'
+
+// @packages/auth 的持久化键与同步事件（见 packages/auth/auth-provider.tsx / README）。
+// 「数据分析」Tab 中的 AdminDashboard 内置 AdminGate（依赖 packages 的认证上下文），
+// 这里把项目自有会话桥接进 packages 认证体系，避免二次登录。
+const PACKAGE_AUTH_USER_KEY = 'app_demo_user'
+const PACKAGE_AUTH_TOKEN_KEY = 'app_access_token'
+const PACKAGE_AUTH_CHANGE_EVENT = 'app-auth-change'
 
 const BLOG_CATEGORIES: ReadonlyArray<{ id: string; name: string; nameZh: string }> = [
   { id: 'podcast-tips', name: 'Podcast Tips', nameZh: '播客技巧' },
@@ -180,10 +191,10 @@ function joinDateFromUserId(id: string): string {
 // ============= Component =============
 export default function AdminPage() {
   const router = useRouter()
-  const { user, loading } = useAuth()
-  const { locale } = useLocale()
+  const { user, loading, signOut, accessToken } = useAuth()
+  const { locale, setLocale } = useLocale()
   const { balance } = useCredits()
-  const t = useCallback((en: string, zh: string) => (locale === 'en' ? en : zh), [locale])
+  const { t } = useLocale()
 
   const [activeTab, setActiveTab] = useState<string>('dashboard')
   const [initialized, setInitialized] = useState(false)
@@ -227,6 +238,30 @@ export default function AdminPage() {
     void loadData()
     setInitialized(true)
   }, [user, loading, router])
+
+  // 支持 /admin?tab=analytics 直达「数据分析」tab（博客页「管理博客」入口使用）
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const tab = new URLSearchParams(window.location.search).get('tab')
+    if (tab === 'analytics') {
+      setActiveTab('analytics')
+    }
+  }, [])
+
+  // 将项目自有会话桥接进 @packages/auth 的存储与事件系统，
+  // 使 AdminDashboard 内置的 AdminGate 能识别当前管理员（无需二次登录）
+  useEffect(() => {
+    if (!user || typeof window === 'undefined') return
+    try {
+      localStorage.setItem(PACKAGE_AUTH_USER_KEY, JSON.stringify(user))
+      if (accessToken) {
+        localStorage.setItem(PACKAGE_AUTH_TOKEN_KEY, accessToken)
+      }
+      window.dispatchEvent(new Event(PACKAGE_AUTH_CHANGE_EVENT))
+    } catch {
+      // ignore storage errors
+    }
+  }, [user, accessToken])
 
   const loadData = async () => {
     if (typeof window === 'undefined') return
@@ -329,6 +364,17 @@ export default function AdminPage() {
   const todayCreditsUsed = Math.max(0, ADMIN_DAILY_CREDITS - balance)
 
   // ============= User Actions =============
+  const handleAdminLogout = useCallback(async () => {
+    try {
+      localStorage.removeItem(PACKAGE_AUTH_USER_KEY)
+      localStorage.removeItem(PACKAGE_AUTH_TOKEN_KEY)
+    } catch {
+      // ignore storage errors
+    }
+    await signOut()
+    router.push('/login')
+  }, [signOut, router])
+
   const handleDeleteUser = (row: UserRow) => {
     if (row.isSystemAdmin) return
     if (
@@ -488,13 +534,14 @@ export default function AdminPage() {
           </Button>
         </div>
 
-        {/* Tabs */}
+        {/* Tabs — AuthProvider 为 packages AdminDashboard（内置 AdminGate）提供认证上下文 */}
+        <AuthProvider>
         <Tabs
           value={activeTab}
           onValueChange={setActiveTab}
           className="space-y-6"
         >
-          <TabsList className="grid w-full grid-cols-2 md:grid-cols-5 h-auto">
+          <TabsList className="grid w-full grid-cols-2 md:grid-cols-6 h-auto">
             <TabsTrigger value="dashboard">
               <BarChart3 className="h-4 w-4 mr-2" />
               {t('Dashboard', '仪表板')}
@@ -514,6 +561,10 @@ export default function AdminPage() {
             <TabsTrigger value="behavior">
               <Activity className="h-4 w-4 mr-2" />
               {t('Behavior', '行为数据')}
+            </TabsTrigger>
+            <TabsTrigger value="analytics">
+              <TrendingUp className="h-4 w-4 mr-2" />
+              {t('Analytics', '数据分析')}
             </TabsTrigger>
           </TabsList>
 
@@ -1343,8 +1394,62 @@ export default function AdminPage() {
               </CardContent>
             </Card>
           </TabsContent>
+
+          {/* ============= Analytics (packages AdminDashboard) Tab ============= */}
+          <TabsContent value="analytics" className="space-y-6">
+            <AnalyticsSection
+              token={accessToken ?? ''}
+              locale={locale === 'zh' ? 'zh' : 'en'}
+              onLogout={handleAdminLogout}
+              onLocaleChange={setLocale}
+            />
+          </TabsContent>
         </Tabs>
+        </AuthProvider>
       </div>
     </div>
+  )
+}
+
+// ============= packages AdminDashboard 挂载 =============
+// AdminDashboard 内部经 AdminGate（@packages/auth）做三层管理员校验，
+// 必须包裹在 AuthProvider 内；同时等 packages 认证上下文从桥接的会话
+// 存储完成水合后再挂载，避免误判未认证而跳转 /login。
+function AnalyticsSection({
+  token,
+  locale,
+  onLogout,
+  onLocaleChange,
+}: {
+  token: string
+  locale: 'zh' | 'en'
+  onLogout: () => void
+  onLocaleChange: (locale: 'zh' | 'en') => void
+}) {
+  const { user, loading } = usePackageAuth()
+
+  if (loading || !user) {
+    return (
+      <div className="flex items-center justify-center py-24">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    )
+  }
+
+  return (
+    <AdminDashboard
+      token={token}
+      locale={locale}
+      onLogout={onLogout}
+      onLocaleChange={onLocaleChange}
+      extraNavItems={[
+        {
+          id: 'blog',
+          label: { zh: '博客管理', en: 'Blog' },
+          icon: <FileText className="w-5 h-5" />,
+          component: <AdminBlogManager token={token} locale={locale} />,
+        },
+      ]}
+    />
   )
 }

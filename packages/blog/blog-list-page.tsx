@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { useAppConfig, type BlogPost, type Locale } from '@clipop/core';
+import { useAppConfig, type BlogPost, type Locale } from '../core';
 import { fetchBlogPosts } from './client';
 
 export interface BlogListPageProps {

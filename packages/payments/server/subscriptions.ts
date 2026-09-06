@@ -12,8 +12,8 @@
  * Idempotent: skips duplicate orders by checking credit_transactions.description.
  */
 
-import type { AppConfig, PaymentProvider } from '@clipop/core';
-import { getAdminClient, isSupabaseConfigured } from '@clipop/core';
+import type { AppConfig, PaymentProvider } from '../../core';
+import { getAdminClient, isSupabaseConfigured } from '../../core';
 
 export interface PlanPurchaseInput {
   userId: string;

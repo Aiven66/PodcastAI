@@ -14,7 +14,7 @@
  * translation unchanged.
  */
 
-import type { AppConfig, BlogPost, Locale } from '@clipop/core';
+import type { AppConfig, BlogPost, Locale } from '../core';
 
 const MAX_CHUNK_SIZE = 480;
 const REQUEST_INTERVAL_MS = 1000;

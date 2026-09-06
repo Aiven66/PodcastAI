@@ -1,6 +1,6 @@
 {
   "name": "podcastai-desktop",
-  "version": "1.0.63",
+  "version": "1.0.78",
   "description": "PodcastAI Desktop Client",
   "main": "dist/main.js",
   "scripts": {
@@ -24,8 +24,8 @@
     ],
     "extraResources": [
       {
-        "from": "voice-runtime",
-        "to": "voice-runtime",
+        "from": "voice-runtime/voice-service",
+        "to": "voice-runtime/voice-service",
         "filter": [
           "**/*",
           "!**/__pycache__/**",
@@ -71,7 +71,8 @@
           ]
         }
       ],
-      "icon": "build/icon.ico"
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,

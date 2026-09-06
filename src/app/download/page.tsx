@@ -17,53 +17,46 @@ interface ReleaseAsset {
   version?: string
 }
 
-// 客户端下载配置 - 指向 GitHub Release v1.0.63，内置 Python 运行时 + CosyVoice2 模型
-const GITHUB_RELEASE_BASE = 'https://github.com/Aiven66/PodcastAI/releases/download/v1.0.63'
-const GITHUB_RELEASE_PAGE = 'https://github.com/Aiven66/PodcastAI/releases/tag/v1.0.63'
-
-// Mac arm64 DMG 超过 GitHub 2GB 限制，分 3 个分片上传
-const MAC_ARM64_PARTS = [
-  { name: 'part-aa', url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.63-arm64.dmg.part-aa`, size: '2.0 GB' },
-  { name: 'part-ab', url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.63-arm64.dmg.part-ab`, size: '2.0 GB' },
-  { name: 'part-ac', url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.63-arm64.dmg.part-ac`, size: '592 MB' },
-]
+// 客户端下载配置 - 指向 GitHub Release v1.0.78
+// v1.0.78 安装包已精简（剥离 Python 运行时与模型，约 440MB），单文件直接下载
+const GITHUB_RELEASE_BASE = 'https://github.com/Aiven66/PodcastAI/releases/download/1.0.78'
+const GITHUB_RELEASE_PAGE = 'https://github.com/Aiven66/PodcastAI/releases/tag/1.0.78'
 
 const RELEASE_ASSETS: ReleaseAsset[] = [
-  // macOS Apple Silicon (M1/M2/M3/M4) - DMG 分 3 片上传，合并后安装
+  // macOS Apple Silicon (M1/M2/M3/M4) - 单文件 DMG，直接下载安装
   {
-    name: 'PodcastAI-1.0.63-arm64.dmg',
+    name: 'PodcastAI-1.0.78-arm64.dmg',
     platform: 'mac',
     arch: 'arm64',
-    url: GITHUB_RELEASE_PAGE,
-    size: '约 4.5 GB（分 3 片）',
-    version: '1.0.63',
+    url: `${GITHUB_RELEASE_BASE}/PodcastAI-1.0.78-arm64.dmg`,
+    size: '约 440 MB',
+    version: '1.0.78',
   },
   // macOS Intel (x64) - 暂未构建（后续版本支持）
   {
-    name: 'PodcastAI-1.0.63.dmg',
+    name: 'PodcastAI-1.0.78.dmg',
     platform: 'mac',
     arch: 'x64',
     url: GITHUB_RELEASE_PAGE,
     size: '暂未构建',
-    version: '1.0.63',
+    version: '1.0.78',
   },
-  // Windows x64 - NSIS 安装包（后续版本支持）
+  // Windows x64 - NSIS 安装包（单文件，运行时与模型安装后自动下载）
   {
-    name: 'PodcastAI.Setup.1.0.63.exe',
+    name: 'PodcastAI.Setup-1.0.78-x64.exe',
     platform: 'windows',
     arch: 'x64',
-    url: GITHUB_RELEASE_PAGE,
-    size: '暂未构建',
-    version: '1.0.63',
+    url: `${GITHUB_RELEASE_BASE}/PodcastAI.Setup-1.0.78-x64.exe`,
+    size: '约 250 MB',
+    version: '1.0.78',
   },
 ]
 
-// Windows 客户端暂不可用（v1.0.4 仅 Mac arm64）
-const WINDOWS_AVAILABLE = false
+// Windows x64 客户端已可用（v1.0.78）
+const WINDOWS_AVAILABLE = true
 
 export default function DownloadPage() {
-  const { locale } = useLocale()
-  const t = (en: string, zh: string) => locale === 'en' ? en : zh
+  const { t } = useLocale()
   const [downloading, setDownloading] = useState<string | null>(null)
   const [osDetected, setOsDetected] = useState<'mac' | 'windows' | 'unknown'>('unknown')
 
@@ -163,27 +156,6 @@ export default function DownloadPage() {
                   </Button>
                 </div>
               ))}
-              {/* Mac arm64 分片下载 */}
-              <div className="p-3 rounded-lg border border-primary/30 bg-primary/5 space-y-2">
-                <p className="text-xs font-medium text-primary">
-                  {t('Apple Silicon download (3 parts — download all, then combine in Terminal):',
-                     'Apple Silicon 下载（分 3 片 — 请全部下载后在终端合并）：')}
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {MAC_ARM64_PARTS.map((part) => (
-                    <a key={part.name} href={part.url} target="_blank" rel="noopener noreferrer">
-                      <Button variant="outline" size="sm" type="button">
-                        <Download className="h-3 w-3 mr-1" />
-                        {part.name} ({part.size})
-                      </Button>
-                    </a>
-                  ))}
-                </div>
-                <div className="text-xs text-muted-foreground font-mono bg-muted/50 p-2 rounded">
-                  {t('Combine command (run in Terminal):', '合并命令（在终端执行）：')}<br/>
-                  cat PodcastAI-1.0.63-arm64.dmg.part-aa PodcastAI-1.0.63-arm64.dmg.part-ab PodcastAI-1.0.63-arm64.dmg.part-ac &gt; PodcastAI-1.0.63-arm64.dmg
-                </div>
-              </div>
             </CardContent>
           </Card>
 
@@ -253,17 +225,17 @@ export default function DownloadPage() {
           </Card>
         </div>
 
-        {/* What's New in v1.0.63 */}
+        {/* What's New in v1.0.78 */}
         <Card className="mb-10 border-primary/40 bg-primary/5">
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
                 <CardTitle className="flex items-center gap-2">
-                  <Badge variant="default">v1.0.63</Badge>
+                  <Badge variant="default">v1.0.78</Badge>
                   {t('What\'s New', '最新更新')}
                 </CardTitle>
                 <CardDescription className="mt-1">
-                  {t('Built-in CosyVoice2 model - true out-of-the-box experience', '内置 CosyVoice2 模型，真正开箱即用')}
+                  {t('Slimmed installer (~440 MB) — now uploadable to GitHub and faster to download', '精简安装包（约 440MB）—— 体积更小、下载更快')}
                 </CardDescription>
               </div>
             </div>
@@ -272,27 +244,31 @@ export default function DownloadPage() {
             <ul className="grid md:grid-cols-2 gap-x-6 gap-y-2 text-sm">
               <li className="flex items-start gap-2">
                 <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                <span>{t('Fixed repeated word/sentence bug - podcast audio now reads the script accurately and naturally', '修复重复朗读问题 - 播客音频现在能准确自然地朗读脚本文案')}</span>
+                <span>{t('Single-file download — no more split-archive merging', '单文件下载，无需再分片合并')}</span>
               </li>
               <li className="flex items-start gap-2">
                 <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                <span>{t('Pre-bundled CosyVoice2 0.5B model (~3.7GB) - no download needed on first launch', '预装 CosyVoice2 0.5B 模型（约 3.7GB），首次启动无需下载')}</span>
+                <span>{t('Python runtime auto-downloads & extracts on first launch', '首次启动自动下载并解压 Python 运行环境')}</span>
               </li>
               <li className="flex items-start gap-2">
                 <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                <span>{t('Built-in Python 3.10.20 runtime with all dependencies', '内置 Python 3.10.20 运行时，包含全部依赖')}</span>
+                <span>{t('CosyVoice2 model auto-downloads on first use', '首次使用时自动下载 CosyVoice2 声音克隆模型')}</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                <span>{t('9 languages: English, 中文, 日本語, 한국어, Español, Français, Deutsch, Português, Русский', '支持 9 种语言：英语、中文、日语、韩语、西班牙语、法语、德语、葡萄牙语、俄语')}</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                <span>{t('Auto-detects system language on first launch', '首次启动自动检测系统语言')}</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
+                <span>{t('Language switcher in Settings - switch instantly without restart', '设置页新增语言选择器，切换即时生效无需重启')}</span>
               </li>
               <li className="flex items-start gap-2">
                 <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
                 <span>{t('Auto-start voice service on app launch - ready in seconds', '应用启动时自动启动语音服务，秒级就绪')}</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                <span>{t('Unified UI design language matching the web version (OKLCH color system)', '统一 UI 设计语言，与网页版一致（OKLCH 配色体系）')}</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />
-                <span>{t('Fixed white-screen issue on startup', '修复启动白屏问题')}</span>
               </li>
               <li className="flex items-start gap-2">
                 <CheckCircle2 className="h-4 w-4 text-primary mt-0.5 shrink-0" />

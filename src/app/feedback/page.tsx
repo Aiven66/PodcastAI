@@ -16,7 +16,7 @@ import { useLocale } from '@/components/locale-provider'
 export default function FeedbackPage() {
   const router = useRouter()
   const { supabase } = useSupabase()
-  const { locale } = useLocale()
+  const { locale, t } = useLocale()
   const [user, setUser] = useState<any>(null)
   const [loading, setLoading] = useState(false)
   const [submitted, setSubmitted] = useState(false)
@@ -39,7 +39,6 @@ export default function FeedbackPage() {
     })
   }, [supabase])
 
-  const t = (en: string, zh: string) => locale === 'en' ? en : zh
 
   const categories = [
     { id: 'general', name: 'General Inquiry', nameZh: '一般咨询' },
@@ -165,7 +164,7 @@ export default function FeedbackPage() {
                       size="sm"
                       onClick={() => setFormData(prev => ({ ...prev, category: cat.id }))}
                     >
-                      {locale === 'en' ? cat.name : cat.nameZh}
+                      {locale === 'zh' ? cat.nameZh : cat.name}
                     </Button>
                   ))}
                 </div>

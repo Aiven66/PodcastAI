@@ -5,7 +5,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { PlanConfig } from '../core/types';
+import type { PlanConfig } from '../../core/types';
 import type { AdminConfig } from './verify';
 import { getTables } from './verify';
 

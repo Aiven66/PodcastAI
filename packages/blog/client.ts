@@ -6,7 +6,7 @@
  * into Supabase queries — see README.md for the route contract.
  */
 
-import type { AppConfig, BlogPost, Locale } from '@clipop/core';
+import type { AppConfig, BlogPost, Locale } from '../core';
 
 const JSON_HEADERS: HeadersInit = { 'Content-Type': 'application/json' };
 

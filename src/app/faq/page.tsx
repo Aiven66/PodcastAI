@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useLocale } from '@/components/locale-provider'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { ChevronDown, ChevronUp } from 'lucide-react'
@@ -81,15 +82,9 @@ const faqs = [
 ]
 
 export default function FAQPage() {
-  const [locale, setLocale] = useState('en')
+  const { locale, t } = useLocale()
   const [expandedQuestions, setExpandedQuestions] = useState<Record<string, boolean>>({})
 
-  useEffect(() => {
-    const savedLocale = localStorage.getItem('locale') || 'en'
-    setLocale(savedLocale)
-  }, [])
-
-  const t = (en: string, zh: string) => locale === 'en' ? en : zh
 
   const toggleQuestion = (key: string) => {
     setExpandedQuestions(prev => ({
@@ -123,7 +118,7 @@ export default function FAQPage() {
             <Card key={category.category}>
               <CardHeader>
                 <CardTitle className="text-xl">
-                  {locale === 'en' ? category.category : category.categoryZh}
+                  {locale === 'zh' ? category.categoryZh : category.category}
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -139,7 +134,7 @@ export default function FAQPage() {
                     >
                       <div className="flex items-center justify-between">
                         <h3 className="font-medium pr-4">
-                          {locale === 'en' ? faq.q : faq.qZh}
+                          {locale === 'zh' ? faq.qZh : faq.q}
                         </h3>
                         {isExpanded ? (
                           <ChevronUp className="h-5 w-5 text-muted-foreground" />
@@ -149,7 +144,7 @@ export default function FAQPage() {
                       </div>
                       {isExpanded && (
                         <p className="mt-3 text-muted-foreground text-sm leading-relaxed">
-                          {locale === 'en' ? faq.a : faq.aZh}
+                          {locale === 'zh' ? faq.aZh : faq.a}
                         </p>
                       )}
                     </div>

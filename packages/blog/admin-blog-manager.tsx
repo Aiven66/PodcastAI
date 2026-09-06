@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useState, useCallback } from 'react';
-import { useAppConfig, type BlogPost, type Locale } from '@clipop/core';
+import { useAppConfig, type BlogPost, type Locale } from '../core';
 import {
   fetchBlogPosts,
   createBlogPost,

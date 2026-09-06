@@ -98,7 +98,7 @@ function PricingPageContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const { user } = useAuth()
-  const { locale } = useLocale()
+  const { locale, t } = useLocale()
 
   const [paymentOpen, setPaymentOpen] = useState(false)
   const [selectedPlan, setSelectedPlan] = useState<PlanInfo | null>(null)
@@ -115,7 +115,6 @@ function PricingPageContent() {
     }
   }, [searchParams])
 
-  const t = (en: string, zh: string) => locale === 'en' ? en : zh
 
   const handleSubscribe = (planId: string) => {
     if (planId === 'free') {
@@ -133,12 +132,12 @@ function PricingPageContent() {
 
     setSelectedPlan({
       id: plan.id,
-      name: locale === 'en' ? plan.name : plan.nameZh,
+      name: locale === 'zh' ? plan.nameZh : plan.name,
       price: {
         cn: plan.price,
         intl: plan.price,
       },
-      period: locale === 'en' ? 'month' : '月',
+      period: locale === 'zh' ? '月' : 'month',
     })
     setPaymentOpen(true)
   }
@@ -211,22 +210,22 @@ function PricingPageContent() {
 
               <CardHeader className="text-center pb-4">
                 <CardTitle className="text-2xl">
-                  {locale === 'en' ? plan.name : plan.nameZh}
+                  {locale === 'zh' ? plan.nameZh : plan.name}
                 </CardTitle>
                 <div className="text-4xl font-bold mt-2">
-                  {locale === 'en' ? `$${plan.price}` : plan.priceZh}
+                  {locale === 'zh' ? plan.priceZh : `$${plan.price}`}
                   {plan.price > 0 && locale === 'en' && (
                     <span className="text-sm text-muted-foreground">/month</span>
                   )}
                 </div>
                 <CardDescription>
-                  {locale === 'en' ? plan.description : plan.descriptionZh}
+                  {locale === 'zh' ? plan.descriptionZh : plan.description}
                 </CardDescription>
               </CardHeader>
 
               <CardContent className="space-y-6">
                 <ul className="space-y-3">
-                  {(locale === 'en' ? plan.features : plan.featuresZh).map((feature, i) => (
+                  {(locale === 'zh' ? plan.featuresZh : plan.features).map((feature, i) => (
                     <li key={i} className="flex items-start gap-2">
                       <Check className="h-4 w-4 text-primary shrink-0 mt-0.5" />
                       <span className="text-sm">{feature}</span>

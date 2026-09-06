@@ -14,7 +14,7 @@
  */
 
 import { createHmac, timingSafeEqual, createVerify, createDecipheriv } from 'crypto';
-import type { AppConfig, PaymentChannelConfig } from '@clipop/core';
+import type { AppConfig, PaymentChannelConfig } from '../../core';
 
 // ── Creem ─────────────────────────────────────────────────────────────────────
 

@@ -6,7 +6,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { FunnelStats } from '../core/types';
+import type { FunnelStats } from '../../core/types';
 import type { AdminConfig } from './verify';
 import { getTables } from './verify';
 

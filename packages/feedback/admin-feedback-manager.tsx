@@ -85,7 +85,7 @@ const ADMIN_I18N = {
   },
 } as const;
 
-type AdminI18n = typeof ADMIN_I18N.en;
+type AdminI18n = (typeof ADMIN_I18N)[keyof typeof ADMIN_I18N];
 
 function getAdminI18n(locale?: string): AdminI18n {
   if (locale && locale in ADMIN_I18N) {

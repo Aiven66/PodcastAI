@@ -51,6 +51,21 @@ export interface ModelDownloadState {
   percent: number
 }
 
+/** 运行时下载阶段（v1.0.79） */
+export type RuntimeStage = 'idle' | 'download' | 'extract' | 'verify' | 'done'
+
+/** Python 运行时状态（v1.0.79） */
+export interface RuntimeDownloadState {
+  isDownloading: boolean
+  stage: RuntimeStage
+  bytesDownloaded: number
+  totalBytes: number
+  speed: number
+  error: string | null
+  installed: boolean
+  percent: number
+}
+
 declare global {
   interface Window {
     podcastai?: {
@@ -79,6 +94,14 @@ declare global {
         openDir: () => Promise<boolean>
         onDownloadProgress: (callback: (state: ModelDownloadState) => void) => () => void
       }
+      runtime: {
+        status: () => Promise<RuntimeDownloadState>
+        download: () => Promise<{ success: boolean; error?: string }>
+        abortDownload: () => Promise<boolean>
+        getDownloadState: () => Promise<RuntimeDownloadState>
+        openDir: () => Promise<boolean>
+        onDownloadProgress: (callback: (state: RuntimeDownloadState) => void) => () => void
+      }
       settings: {
         get: () => Promise<AppSettings>
         set: (settings: AppSettings) => Promise<boolean>
@@ -89,6 +112,25 @@ declare global {
       shell: {
         showItemInFolder: (filePath: string) => Promise<boolean>
         openExternal: (url: string) => Promise<boolean>
+      }
+      /** v1.0.31: 认证系统（桌面端 ↔ Web 端登录打通） */
+      auth?: {
+        getState: () => Promise<{
+          token: string | null
+          refreshToken: string | null
+          email: string | null
+          userId: string | null
+          name: string | null
+          callbackUrl: string
+          webLoginUrl: string
+        }>
+        openWebLogin: () => Promise<{ success: boolean; url?: string; error?: string }>
+        signOut: () => Promise<{ success: boolean }>
+        deliverToken: (payload: { token: string; refreshToken?: string; email?: string; userId?: string; name?: string }) => Promise<{ success: boolean; error?: string }>
+        onLoginSuccess: (callback: (info: { token: string; email?: string; name?: string; userId?: string }) => void) => () => void
+        onLogout: (callback: () => void) => () => void
+        /** v1.0.78: 网页端发起的反向认证请求（podcastai://auth） */
+        onWebAuthRequested?: (callback: () => void) => () => void
       }
     }
   }

@@ -1,5 +1,7 @@
 'use client'
 
+import { translate, type Locale } from '@/lib/i18n'
+import { useEffect } from 'react'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -24,6 +26,9 @@ import {
   Waves,
 } from 'lucide-react'
 import { useLocale } from '@/components/locale-provider'
+import { useAppConfig } from '@packages/core/config'
+import { initAnalytics, trackEvent } from '@packages/analytics/sdk'
+import { stepOf, VIDEO_FUNNEL } from '@packages/analytics/funnel-config'
 
 // ---------- 数据 ----------
 
@@ -205,6 +210,19 @@ const pricingPlans = [
 
 export default function HomePage() {
   const { locale, t } = useLocale()
+  const appConfig = useAppConfig()
+
+  // 初始化 packages 埋点 SDK：将 AppConfig 写入全局引用，
+  // 供 trackEvent 解析上报端点与会话 TTL（仅客户端执行，SSR 安全）
+  useEffect(() => {
+    initAnalytics(appConfig)
+  }, [appConfig])
+
+  // 首页浏览埋点：video_generation 漏斗第 1 步 page_view_home
+  //（trackEvent 内部自带 SSR 守卫与静默失败，不影响页面渲染）
+  useEffect(() => {
+    void trackEvent(stepOf(VIDEO_FUNNEL, 1))
+  }, [])
 
   return (
     <div className="flex flex-col">
@@ -595,8 +613,9 @@ export default function HomePage() {
 
 // ---------- 子组件：产品 Mockup（Hero 右侧）----------
 
-function ProductMockup({ locale }: { locale: string }) {
-  const t = (en: string, zh: string) => (locale === 'zh' ? zh : en)
+function ProductMockup({ locale }: { locale: Locale }) {
+  const t = (en: string, zh: string) =>
+    locale === 'zh' ? zh : locale === 'en' ? en : translate(locale, en)
   return (
     <div className="relative">
       {/* 主窗口 */}
@@ -731,9 +750,10 @@ function FeatureIllustration({
   icon: React.ComponentType<{ className?: string }>
   titleEn: string
   titleZh: string
-  locale: string
+  locale: Locale
 }) {
-  const t = (en: string, zh: string) => (locale === 'zh' ? zh : en)
+  const t = (en: string, zh: string) =>
+    locale === 'zh' ? zh : locale === 'en' ? en : translate(locale, en)
 
   // 不同功能展示不同的示意图
   const illustrations = [

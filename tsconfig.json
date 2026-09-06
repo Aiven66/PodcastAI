@@ -20,7 +20,8 @@
     ],
     "paths": {
       "@/*": ["./src/*"],
-      "@base/*": ["./base/*"]
+      "@base/*": ["./base/*"],
+      "@packages/*": ["./packages/*"]
     }
   },
   "include": [
@@ -31,5 +32,5 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "dist", "voice-service", "electron", "packages"]
+  "exclude": ["node_modules", "dist", "voice-service", "electron", "packages/integration-example.tsx", "public/downloads"]
 }

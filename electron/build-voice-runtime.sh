@@ -88,6 +88,7 @@ $PYTHON_EXE -m pip install --no-warn-script-location \
   "joblib==1.3.2" \
   openai-whisper \
   "onnxruntime==1.18.1" \
+  "imageio-ffmpeg>=0.5.1" \
   "torch==2.3.1" \
   "torchaudio==2.3.1"
 
@@ -129,12 +130,19 @@ cp "$VOICE_SERVICE_DIR/edge_tts_worker.py" "$RUNTIME_DIR/voice-service/" 2>/dev/
 cp "$VOICE_SERVICE_DIR/weight.json" "$RUNTIME_DIR/voice-service/" 2>/dev/null || true
 
 # 复制 CosyVoice 源码（不含 pretrained_models 模型文件）
+# rsync 仅具备时使用；Windows git-bash 无 rsync，回退到 cp + 清理
 echo "Copying CosyVoice source (excluding models)..."
 if [ -d "$VOICE_SERVICE_DIR/CosyVoice" ]; then
   mkdir -p "$RUNTIME_DIR/voice-service/CosyVoice"
-  # 使用 rsync 排除 pretrained_models、__pycache__、.git
-  rsync -a --exclude='pretrained_models' --exclude='__pycache__' --exclude='.git' \
-    "$VOICE_SERVICE_DIR/CosyVoice/" "$RUNTIME_DIR/voice-service/CosyVoice/"
+  if command -v rsync >/dev/null 2>&1; then
+    rsync -a --exclude='pretrained_models' --exclude='__pycache__' --exclude='.git' \
+      "$VOICE_SERVICE_DIR/CosyVoice/" "$RUNTIME_DIR/voice-service/CosyVoice/"
+  else
+    cp -R "$VOICE_SERVICE_DIR/CosyVoice/." "$RUNTIME_DIR/voice-service/CosyVoice/"
+    rm -rf "$RUNTIME_DIR/voice-service/CosyVoice/pretrained_models" \
+           "$RUNTIME_DIR/voice-service/CosyVoice/__pycache__" \
+           "$RUNTIME_DIR/voice-service/CosyVoice/.git"
+  fi
 fi
 
 # 创建启动脚本

@@ -29,8 +29,7 @@ import { useCredits, ADMIN_DAILY_CREDITS } from '@/hooks/use-credits'
 export default function ConsolePage() {
   const router = useRouter()
   const { user, loading: authLoading } = useAuth()
-  const { locale } = useLocale()
-  const t = (en: string, zh: string) => (locale === 'en' ? en : zh)
+  const { locale, t } = useLocale()
 
   // 积分系统
   const { balance: credits } = useCredits()

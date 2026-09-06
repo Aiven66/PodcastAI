@@ -20,7 +20,7 @@ import {
   type PaymentChannelConfig,
   type PaymentProvider,
   type PlanConfig,
-} from '@clipop/core';
+} from '../core';
 import { PayPalCheckout } from './paypal-checkout';
 
 export interface PaymentModalProps {

@@ -17,8 +17,7 @@ function DesktopCallbackContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const { verifyDesktopToken } = useAuth()
-  const { locale } = useLocale()
-  const t = (en: string, zh: string) => locale === 'en' ? en : zh
+  const { locale, t } = useLocale()
 
   const [status, setStatus] = useState<'processing' | 'success' | 'error'>('processing')
   const [errorMsg, setErrorMsg] = useState('')

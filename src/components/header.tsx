@@ -15,7 +15,8 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { useAuth } from '@/lib/auth-context'
 import { useLocale } from '@/components/locale-provider'
-import { Menu, Globe, User as UserIcon, LogOut, Settings, LayoutDashboard, Mic, Headphones, Shield, Download } from 'lucide-react'
+import { SUPPORTED_LOCALES, LOCALE_META } from '@/lib/i18n'
+import { Menu, Globe, User as UserIcon, LogOut, Settings, LayoutDashboard, Mic, Headphones, Shield, Download, Check } from 'lucide-react'
 
 const navItems = [
   { href: '/', label: 'Home', labelZh: '首页' },
@@ -24,22 +25,38 @@ const navItems = [
   { href: '/blog', label: 'Blog', labelZh: '博客' },
   { href: '/faq', label: 'FAQ', labelZh: '常见问题' },
   { href: '/feedback', label: 'Feedback', labelZh: '用户反馈' },
-  { href: '/about', label: 'About', labelZh: '关于我们' },
+  { href: '/about', label: 'About Us', labelZh: '关于我们' },
 ]
 
 function LanguageSwitcher() {
   const { locale, setLocale } = useLocale()
-  
+
   return (
-    <Button
-      variant="ghost"
-      size="sm"
-      onClick={() => setLocale(locale === 'en' ? 'zh' : 'en')}
-      className="gap-1 text-muted-foreground hover:text-foreground"
-    >
-      <Globe className="h-4 w-4" />
-      <span className="text-sm">{locale === 'en' ? 'EN' : '中'}</span>
-    </Button>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="gap-1 text-muted-foreground hover:text-foreground"
+          aria-label="Switch language"
+        >
+          <Globe className="h-4 w-4" />
+          <span className="text-sm">{LOCALE_META[locale].nativeName}</span>
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-40">
+        {SUPPORTED_LOCALES.map((code) => (
+          <DropdownMenuItem
+            key={code}
+            onClick={() => setLocale(code)}
+            className="flex items-center justify-between cursor-pointer"
+          >
+            <span>{LOCALE_META[code].nativeName}</span>
+            {locale === code && <Check className="h-4 w-4 text-primary" />}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -97,7 +114,7 @@ function UserMenu({
 
 export function Header() {
   const { user, loading, signOut } = useAuth()
-  const { locale, t } = useLocale()
+  const { t } = useLocale()
   const [isAdmin, setIsAdmin] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const pathname = usePathname()
@@ -131,7 +148,7 @@ export function Header() {
                   : 'text-muted-foreground'
               }`}
             >
-              {locale === 'en' ? item.label : item.labelZh}
+              {t(item.label, item.labelZh)}
             </Link>
           ))}
         </nav>
@@ -191,7 +208,7 @@ export function Header() {
                         : 'text-muted-foreground'
                     }`}
                   >
-                    {locale === 'en' ? item.label : item.labelZh}
+                    {t(item.label, item.labelZh)}
                   </Link>
                 ))}
                 {user && (

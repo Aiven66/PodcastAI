@@ -48,6 +48,23 @@
  *              n-gram 长度 3-8→2-8（捕获"得了"这种 2 token 词）
  *              窗口 80→100 token，次数 ≥3→≥2 次触发
  *              新增单 token 高频检测（4 次/100 窗口即拦截）
+ * - v1.0.78: 彻底修复桌面端 ↔ Web 端登录链路三断点
+ *            - macOS 关窗后回调服务器被停掉、Dock 重开不重启 →
+ *              登录 URL 缺 callbackUrl（日志 07:38:49 铁证）→ token 无处回传。
+ *              修复：activate 重开窗口时自动重启回调服务器；
+ *              openWebLogin 前若服务器未运行先兜底启动
+ *            - 网页端 /login?mode=desktop 默认展示"桌面客户端验证"tab（循环流程）
+ *              而非登录表单 → 用户卡在验证界面。
+ *              修复：Web 端 desktop 流程默认"登录"tab 并隐藏桌面端 tab
+ *            - 反向流程 podcastai://auth（网页"启动桌面客户端"）无任何处理 →
+ *              网页卡"等待桌面客户端响应"5 分钟超时。
+ *              修复：已登录立即回传 token；未登录挂起，桌面端登录成功后
+ *              自动打开 redirect URL 回传，网页端自动完成登录
+ *            - safeStorage 在 adhoc 签名应用中跨进程不稳定（A 进程可加密、
+ *              B 进程不可用）→ 保存时加密、重启后解不开 → auth.dat 被删、
+ *              每次重启都要重新登录。
+ *              修复：token 统一 base64 存储（与 keychain 无关，重启/更新后
+ *              100% 可恢复）；加载时兼容解密旧 safeStorage 格式
  */
 
 import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } from 'electron'
@@ -55,11 +72,11 @@ import * as path from 'path'
 import * as fs from 'fs'
 import * as http from 'http'
 import * as https from 'https'
-import { spawn, ChildProcess } from 'child_process'
+import { spawn, execFile, ChildProcess } from 'child_process'
 
 // ─── v1.0.31 认证系统常量 ───
 // Web 端部署地址（用于跳转登录）
-const WEB_APP_URL = 'https://podcastai-plum.vercel.app'
+const WEB_APP_URL = 'https://podcastai.clipopai.com'
 // Deep-link scheme，用于浏览器登录后回跳桌面端
 const DESKTOP_SCHEME = 'podcastai'
 // token 安全存储文件名
@@ -104,6 +121,43 @@ let modelDownloadState: ModelDownloadState = {
 }
 let modelDownloadAborted = false
 
+// ─── v1.0.79: Python 运行时下载状态 ───
+type RuntimeStage = 'idle' | 'download' | 'extract' | 'verify' | 'done'
+
+interface RuntimeDownloadState {
+  isDownloading: boolean
+  stage: RuntimeStage
+  bytesDownloaded: number
+  totalBytes: number
+  speed: number // bytes/sec
+  error: string | null
+  installed: boolean
+}
+let runtimeDownloadState: RuntimeDownloadState = {
+  isDownloading: false,
+  stage: 'idle',
+  bytesDownloaded: 0,
+  totalBytes: 0,
+  speed: 0,
+  error: null,
+  installed: false,
+}
+let runtimeDownloadAborted = false
+
+// 运行时归档下载源（GitHub Release 主源 + 预留镜像回退，与 MODEL_DOWNLOAD_URLS 同构）
+// v1.0.78: 按平台/架构选择对应归档（mac 用 python/bin/python3，win 用 python/python.exe）
+const RUNTIME_RELEASE_BASE = 'https://github.com/Aiven66/PodcastAI/releases/download/runtime'
+const RUNTIME_ARCHIVE_VERSION = '3.10.20-20260623'
+
+function getRuntimeArchiveUrl(): string {
+  const arch = process.arch === 'arm64' ? 'arm64' : 'x64'
+  const osName = process.platform === 'win32' ? 'win' : 'mac'
+  return `${RUNTIME_RELEASE_BASE}/python-runtime-${osName}-${arch}-${RUNTIME_ARCHIVE_VERSION}.tar.gz`
+}
+
+// 预留镜像回退（主源失败时依次尝试；后续可追加 CDN 镜像地址）
+const RUNTIME_DOWNLOAD_URLS: string[] = [getRuntimeArchiveUrl()]
+
 function pushLog(line: string) {
   const ts = new Date().toISOString().slice(11, 19)
   const entry = `[${ts}] ${line}`
@@ -131,30 +185,37 @@ function getResourcesDir(): string {
 }
 
 function getVoiceRuntimeDir(): string {
-  const dir = path.join(getResourcesDir(), 'voice-runtime')
-  if (app.isPackaged) {
-    try {
-      const pythonDir = path.join(dir, 'python')
-      if (fs.existsSync(pythonDir) && fs.lstatSync(pythonDir).isSymbolicLink()) {
-        const sourceRuntime = path.resolve('/Users/aiven/Desktop/AI/tare-solo/PodcastAI/electron/voice-runtime')
-        if (fs.existsSync(path.join(sourceRuntime, 'python', 'bin', 'python3'))) {
-          pushLog('[v1.0.36] Using source voice-runtime: ' + sourceRuntime)
-          return sourceRuntime
-        }
-      }
-    } catch (err) {
-      pushLog('[v1.0.36] Symlink check failed: ' + (err instanceof Error ? err.message : String(err)))
-    }
+  // v1.0.79: 仅内置只读的 voice-service 源码；python 与模型改为按需下载到可写用户目录
+  return path.join(getResourcesDir(), 'voice-runtime')
+}
+
+/**
+ * v1.0.79: Python 运行时基目录解析
+ * 打包后 Resources/voice-runtime 只读且不再内置 python；
+ * 优先命中内置 python（开发模式兜底），否则回退到按需下载的用户目录。
+ */
+function getPythonBaseDir(): string {
+  const bundled = path.join(getVoiceRuntimeDir(), 'python')
+  const pyExe = process.platform === 'win32'
+    ? path.join(bundled, 'python', 'python.exe')
+    : path.join(bundled, 'python', 'bin', 'python3')
+  if (fs.existsSync(pyExe)) {
+    return bundled
   }
-  return dir
+  return getPythonRuntimeDir()
+}
+
+/** v1.0.79: python 运行时可写安装目录（下载解压后的父目录，内含 python/） */
+function getPythonRuntimeDir(): string {
+  return path.join(getUserDataDir(), 'python-runtime')
 }
 
 function getPythonExe(): string {
-  const runtimeDir = getVoiceRuntimeDir()
+  const pythonHome = getPythonHome()
   if (process.platform === 'win32') {
-    return path.join(runtimeDir, 'python', 'python.exe')
+    return path.join(pythonHome, 'python.exe')
   }
-  return path.join(runtimeDir, 'python', 'bin', 'python3')
+  return path.join(pythonHome, 'bin', 'python3')
 }
 
 function getVoiceServiceDir(): string {
@@ -166,7 +227,7 @@ function getMainPy(): string {
 }
 
 function getPythonHome(): string {
-  return path.join(getVoiceRuntimeDir(), 'python')
+  return path.join(getPythonBaseDir(), 'python')
 }
 
 function getPythonPath(): string {
@@ -278,7 +339,14 @@ const MODEL_FILE_SIZES: Record<string, number> = {
   'configuration.json': 47,
 }
 
-function downloadFile(url: string, destPath: string, onProgress: (downloaded: number, total: number) => void): Promise<void> {
+type DownloadFileOptions = {
+  getAborted?: () => boolean
+  onSpeed?: (speed: number) => void
+}
+
+function downloadFile(url: string, destPath: string, onProgress: (downloaded: number, total: number) => void, opts: DownloadFileOptions = {}): Promise<void> {
+  const getAborted = opts.getAborted || (() => modelDownloadAborted)
+  const onSpeed = opts.onSpeed || (() => {})
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(destPath)
     let downloaded = 0
@@ -292,7 +360,7 @@ function downloadFile(url: string, destPath: string, onProgress: (downloaded: nu
         if (redirectUrl) {
           file.close()
           fs.unlinkSync(destPath)
-          downloadFile(redirectUrl, destPath, onProgress).then(resolve).catch(reject)
+          downloadFile(redirectUrl, destPath, onProgress, opts).then(resolve).catch(reject)
           return
         }
       }
@@ -305,7 +373,7 @@ function downloadFile(url: string, destPath: string, onProgress: (downloaded: nu
 
       const total = parseInt(response.headers['content-length'] || '0', 10)
       response.on('data', (chunk: Buffer) => {
-        if (modelDownloadAborted) {
+        if (getAborted()) {
           req.destroy()
           file.close()
           try { fs.unlinkSync(destPath) } catch {}
@@ -319,7 +387,7 @@ function downloadFile(url: string, destPath: string, onProgress: (downloaded: nu
           lastTime = now
           lastDownloaded = downloaded
           onProgress(downloaded, total)
-          modelDownloadState.speed = speed
+          onSpeed(speed)
         }
       })
       response.pipe(file)
@@ -353,6 +421,50 @@ async function downloadModelWithFallback(filename: string, destPath: string, onP
     }
   }
   throw lastError || new Error('All download sources failed')
+}
+
+// ─── v1.0.79: 目录型模型条目（如 flow.encoder.fp16）的 HF tree API 文件枚举 ───
+interface HFRepoFile { rfilename: string; type: string }
+const MODEL_REPO_ID = 'FunAudioLLM/CosyVoice2-0.5B'
+
+function hfListDir(url: string): Promise<HFRepoFile[]> {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      if (res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) {
+        const loc = res.headers.location
+        res.resume()
+        if (loc) { hfListDir(loc).then(resolve).catch(reject); return }
+        reject(new Error('Redirect without location'))
+        return
+      }
+      if (res.statusCode !== 200) { res.resume(); reject(new Error(`HTTP ${res.statusCode}`)); return }
+      let body = ''
+      res.on('data', (c) => (body += c))
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(body) as HFRepoFile[])
+        } catch (e) { reject(e) }
+      })
+    }).on('error', reject)
+  })
+}
+
+async function listModelDirFiles(dirName: string): Promise<string[]> {
+  const apiUrls = [
+    `https://huggingface.co/api/models/${MODEL_REPO_ID}/tree/main/${dirName}?recursive=true&expand=false`,
+    `https://hf-mirror.com/api/models/${MODEL_REPO_ID}/tree/main/${dirName}?recursive=true&expand=false`,
+  ]
+  for (const api of apiUrls) {
+    try {
+      const list = await hfListDir(api)
+      const files = list.filter((f) => f.type === 'file').map((f) => f.rfilename)
+      if (files.length > 0) return files
+      pushLog(`  ⚠ Empty listing from ${api}`)
+    } catch (e) {
+      pushLog(`  ✗ listModelDirFiles failed on ${api}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  throw new Error(`Failed to list model directory: ${dirName}`)
 }
 
 function updateDownloadProgress() {
@@ -410,22 +522,41 @@ async function downloadModel(): Promise<{ success: boolean; error?: string }> {
       const filename = REQUIRED_MODEL_FILES[i]
       const destPath = path.join(modelDir, filename)
 
-      // 目录类型条目（如 flow.encoder.fp16）无法通过单文件下载补全
-      // 这些条目应随安装包内置；若缺失，提示用户重新安装应用
+      // 目录类型条目（如 flow.encoder.fp16）：通过 HF tree API 枚举后逐文件下载
+      // v1.0.79: 不再内置模型，目录必须能按需补全
       if (MODEL_DIR_ENTRIES.has(filename)) {
-        if (fs.existsSync(destPath)) {
-          pushLog(`  ✓ Already exists (dir): ${filename}`)
-          modelDownloadState.currentIndex = i + 1
-          modelDownloadState.bytesDownloaded += MODEL_FILE_SIZES[filename] || 0
-          updateDownloadProgress()
-          continue
-        } else {
-          pushLog(`  ✗ Missing directory: ${filename} — please reinstall the app`)
-          modelDownloadState.currentIndex = i + 1
-          modelDownloadState.bytesDownloaded += MODEL_FILE_SIZES[filename] || 0
-          updateDownloadProgress()
-          continue
+        if (modelDownloadAborted) {
+          pushLog('Model download aborted')
+          modelDownloadState.isDownloading = false
+          return { success: false, error: 'Aborted' }
         }
+        fs.mkdirSync(destPath, { recursive: true })
+        const dirFiles = await listModelDirFiles(filename)
+        pushLog(`  Listing directory ${filename}: ${dirFiles.length} files`)
+        for (const rel of dirFiles) {
+          if (modelDownloadAborted) {
+            pushLog('Model download aborted')
+            modelDownloadState.isDownloading = false
+            return { success: false, error: 'Aborted' }
+          }
+          const destFile = path.join(destPath, rel)
+          if (fs.existsSync(destFile)) {
+            modelDownloadState.currentIndex = i + 1
+            continue
+          }
+          fs.mkdirSync(path.dirname(destFile), { recursive: true })
+          modelDownloadState.currentFile = `${filename}/${rel}`
+          const baseDownloaded = modelDownloadState.bytesDownloaded
+          pushLog(`  Downloading (dir): ${filename}/${rel}`)
+          await downloadModelWithFallback(`${filename}/${rel}`, destFile, (downloaded, total) => {
+            modelDownloadState.bytesDownloaded = baseDownloaded + downloaded
+            updateDownloadProgress()
+          })
+          modelDownloadState.bytesDownloaded = baseDownloaded + (MODEL_FILE_SIZES[filename] || 0)
+          updateDownloadProgress()
+        }
+        modelDownloadState.currentIndex = i + 1
+        continue
       }
 
       // 如果文件已存在且大小匹配，跳过
@@ -468,6 +599,154 @@ async function downloadModel(): Promise<{ success: boolean; error?: string }> {
   }
 }
 
+// ─── v1.0.79: Python 运行时下载 / 解压 ───
+function pushRuntimeProgress() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('runtime:download-progress', {
+      ...runtimeDownloadState,
+      percent: runtimeDownloadState.totalBytes > 0
+        ? Math.round((runtimeDownloadState.bytesDownloaded / runtimeDownloadState.totalBytes) * 100)
+        : 0,
+    })
+  }
+}
+
+function getRuntimeArchivePath(): string {
+  return path.join(getUserDataDir(), '.runtime-download.tar.gz')
+}
+
+/** 用系统 tar 解压 tar.gz 到目标父目录（macOS / Windows 均自带，避免新增依赖） */
+function extractTarGz(src: string, destDir: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    fs.mkdirSync(destDir, { recursive: true })
+    execFile('tar', ['-xzf', src, '-C', destDir], { maxBuffer: 64 * 1024 * 1024 }, (err) => {
+      if (err) reject(err)
+      else resolve()
+    })
+  })
+}
+
+async function downloadRuntimeWithFallback(onProgress: (downloaded: number, total: number) => void): Promise<void> {
+  const destPath = getRuntimeArchivePath()
+  let lastError: Error | null = null
+  for (const url of RUNTIME_DOWNLOAD_URLS) {
+    try {
+      pushLog(`  Trying: ${url}`)
+      runtimeDownloadState.totalBytes = 0
+      runtimeDownloadState.bytesDownloaded = 0
+      await downloadFile(url, destPath, onProgress, {
+        getAborted: () => runtimeDownloadAborted,
+        onSpeed: (speed) => { runtimeDownloadState.speed = speed },
+      })
+      pushLog(`  ✓ Runtime archive downloaded`)
+      return
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err))
+      pushLog(`  ✗ Failed: ${url} - ${lastError.message}`)
+      try { if (fs.existsSync(destPath)) fs.unlinkSync(destPath) } catch {}
+      if (lastError.message === 'Aborted' || runtimeDownloadAborted) throw lastError
+    }
+  }
+  throw lastError || new Error('All runtime download sources failed')
+}
+
+/**
+ * v1.0.79: 下载并解压 python 运行时归档（含 site-packages）
+ * 幂等：运行时已就绪直接返回成功。
+ */
+async function downloadRuntime(): Promise<{ success: boolean; error?: string }> {
+  if (checkRuntimeExists()) {
+    runtimeDownloadState.installed = true
+    return { success: true }
+  }
+  if (runtimeDownloadState.isDownloading) {
+    return { success: false, error: 'Download already in progress' }
+  }
+
+  const installDir = getPythonRuntimeDir()
+  const tmpArchive = getRuntimeArchivePath()
+  const tmpInstallDir = path.join(installDir, '.extracting')
+
+  fs.mkdirSync(installDir, { recursive: true })
+  runtimeDownloadAborted = false
+  runtimeDownloadState = {
+    isDownloading: true,
+    stage: 'download',
+    bytesDownloaded: 0,
+    totalBytes: 0,
+    speed: 0,
+    error: null,
+    installed: false,
+  }
+  pushRuntimeProgress()
+
+  try {
+    // 1) 下载归档
+    runtimeDownloadState.stage = 'download'
+    pushLog('Starting Python runtime download...')
+    await downloadRuntimeWithFallback((downloaded, total) => {
+      runtimeDownloadState.bytesDownloaded = downloaded
+      if (total > 0) runtimeDownloadState.totalBytes = total
+      pushRuntimeProgress()
+    })
+    if (runtimeDownloadAborted) {
+      runtimeDownloadState.isDownloading = false
+      runtimeDownloadState.stage = 'idle'
+      try { if (fs.existsSync(tmpArchive)) fs.unlinkSync(tmpArchive) } catch {}
+      pushLog('Runtime download aborted')
+      return { success: false, error: 'Aborted' }
+    }
+
+    // 2) 解压（先到临时目录，校验通过后原子替换，失败清理）
+    runtimeDownloadState.stage = 'extract'
+    pushRuntimeProgress()
+    pushLog('Extracting Python runtime...')
+    try { fs.rmSync(tmpInstallDir, { recursive: true, force: true }) } catch {}
+    await extractTarGz(tmpArchive, tmpInstallDir)
+    // 归档内容根为 python/，解压到 <installDir>/.extracting/python
+    const extractedPython = path.join(tmpInstallDir, 'python')
+    if (!fs.existsSync(path.join(extractedPython, getPythonExeSubPath()))) {
+      throw new Error('Runtime archive missing python executable')
+    }
+
+    // 3) 校验通过后原子替换
+    runtimeDownloadState.stage = 'verify'
+    pushRuntimeProgress()
+    const finalPythonDir = path.join(installDir, 'python')
+    try { fs.rmSync(finalPythonDir, { recursive: true, force: true }) } catch {}
+    try { fs.rmSync(path.join(installDir, '.extracting'), { recursive: true, force: true }) } catch {}
+    fs.mkdirSync(installDir, { recursive: true })
+    fs.renameSync(tmpInstallDir, path.join(installDir, 'python'))
+    // 确保可执行位（tar 通常保留，这里兜底）
+    const pyExe = getPythonExe()
+    try { fs.chmodSync(pyExe, 0o755) } catch {}
+
+    if (!fs.existsSync(pyExe)) {
+      throw new Error('Runtime install verification failed')
+    }
+
+    runtimeDownloadState.isDownloading = false
+    runtimeDownloadState.stage = 'done'
+    runtimeDownloadState.installed = true
+    pushRuntimeProgress()
+    pushLog('✓ Python runtime installed')
+    return { success: true }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    runtimeDownloadState.isDownloading = false
+    runtimeDownloadState.stage = 'idle'
+    runtimeDownloadState.error = msg
+    try { if (fs.existsSync(tmpArchive)) fs.unlinkSync(tmpArchive) } catch {}
+    try { fs.rmSync(tmpInstallDir, { recursive: true, force: true }) } catch {}
+    pushLog(`✗ Runtime download failed: ${msg}`)
+    return { success: false, error: msg }
+  }
+}
+
+function getPythonExeSubPath(): string {
+  return process.platform === 'win32' ? path.join('python.exe') : 'bin/python3'
+}
+
 // ─── 启动服务 ───
 async function startVoiceService(): Promise<{ success: boolean; pid?: number; error?: string }> {
   if (serviceProcess) {
@@ -494,11 +773,15 @@ async function startVoiceService(): Promise<{ success: boolean; pid?: number; er
     // v1.0.35: 修复 macOS GUI 应用不继承 shell PATH 的问题
     // 从 Finder 启动的应用 PATH 只有 /usr/bin:/bin:/usr/sbin:/sbin
     // 导致 ffmpeg（Homebrew 安装在 /opt/homebrew/bin）不可用
+    // v1.0.79(win): Windows 用 ';' 作为路径分隔符，且不注入 macOS 专有路径
     const parentPath = process.env.PATH || ''
-    const extraPaths = ['/opt/homebrew/bin', '/usr/local/bin', '/snap/bin']
+    const pathSep = process.platform === 'win32' ? ';' : ':'
+    const extraPaths = process.platform === 'win32'
+      ? []
+      : ['/opt/homebrew/bin', '/usr/local/bin', '/snap/bin']
     const mergedPath = extraPaths
-      .filter(p => fs.existsSync(p) && !parentPath.includes(p))
-      .reduce((acc, p) => acc + ':' + p, parentPath)
+      .filter(p => fs.existsSync(p) && !parentPath.split(pathSep).includes(p))
+      .reduce((acc, p) => acc + pathSep + p, parentPath)
 
     const env: Record<string, string> = {
       ...process.env as Record<string, string>,
@@ -711,6 +994,11 @@ ipcMain.handle('shell:showItemInFolder', async (_, filePath: string) => {
 let callbackServer: http.Server | null = null
 let callbackPort = 0  // 0 = 未启动，动态分配端口
 
+// v1.0.78: 反向流程（网页端"启动桌面客户端"）挂起的回传地址
+// 收到 podcastai://auth?redirect=... 时：已登录则立即回传 token；
+// 未登录则先记录，待登录成功后自动回传
+let pendingWebAuthRedirect: string | null = null
+
 // 内存中的认证状态
 interface AuthState {
   token: string | null
@@ -729,32 +1017,18 @@ function getAuthStorePath(): string {
 }
 
 /**
- * 判断 safeStorage 是否可用（macOS Keychain / Windows DPAPI / Linux libsecret）
- */
-function isSafeStorageAvailable(): boolean {
-  try {
-    return safeStorage.isEncryptionAvailable()
-  } catch {
-    return false
-  }
-}
-
-/**
- * 持久化认证状态到加密文件
- * safeStorage 不可用时回退到明文存储（仅本地，不传输）
+ * 持久化认证状态
+ * v1.0.78: 统一使用 base64 编码存储，不再用 safeStorage
+ *   实测 adhoc 签名应用 safeStorage 跨进程不稳定（A 进程可加密、B 进程不可用），
+ *   一旦"保存时加密、加载时不可用"→ 解密失败删文件 → 登录态丢失（每次重启都要重新登录）。
+ *   且应用靠重新打包分发（每次更新签名都变），keychain 绑定必然失效。
+ *   base64 虽非加密，但与 keychain 无关，重启/更新后 100% 可恢复。
  */
 function saveAuthState(state: AuthState): boolean {
   try {
     const json = JSON.stringify(state)
-    const buf = Buffer.from(json, 'utf-8')
-    let outBuf: Buffer
-    if (isSafeStorageAvailable()) {
-      outBuf = safeStorage.encryptString(json)
-    } else {
-      // 回退：base64 编码（不是真正的加密，但避免明文）
-      outBuf = Buffer.from(buf.toString('base64'), 'utf-8')
-    }
-    fs.writeFileSync(getAuthStorePath(), outBuf)
+    const outBuf = Buffer.from(json, 'utf-8').toString('base64')
+    fs.writeFileSync(getAuthStorePath(), outBuf, 'utf-8')
     return true
   } catch (err) {
     pushLog(`[AUTH] Failed to save auth state: ${err instanceof Error ? err.message : String(err)}`)
@@ -763,52 +1037,59 @@ function saveAuthState(state: AuthState): boolean {
 }
 
 /**
- * 从加密文件加载认证状态
+ * 从持久化文件加载认证状态
+ * v1.0.78: 兼容读取新旧两种格式
+ *   - 新格式：base64（saveAuthState 现在统一写这种）
+ *   - 旧格式：safeStorage 加密（v1.0.31-1.0.77 可能写入），
+ *     不依赖 isEncryptionAvailable()（该接口对 adhoc 应用不稳定会误报 false），
+ *     直接尝试 decryptString，失败说明密钥已不可用（重签名/更新后必然如此）
  */
 function loadAuthState(): AuthState | null {
   try {
     const filePath = getAuthStorePath()
     if (!fs.existsSync(filePath)) return null
     const buf = fs.readFileSync(filePath)
-    let json: string = ''
-    
-    // v1.0.36: 修复 safeStorage 在未签名应用中可能阻塞的问题
-    // 优先尝试 base64 解码（明文回退方案），失败再尝试 safeStorage
+
+    // 1) 优先按 base64 解码（新格式）
     try {
-      json = Buffer.from(buf.toString('utf-8'), 'base64').toString('utf-8')
-      // 验证是否是有效的 JSON
-      JSON.parse(json)
-    } catch (base64Err) {
-      // base64 解码失败，说明是用 safeStorage 加密的
-      // 尝试 safeStorage 解密
-      if (isSafeStorageAvailable()) {
-        try {
-          json = safeStorage.decryptString(buf)
-        } catch (decErr) {
-          pushLog(`[AUTH] safeStorage decrypt failed: ${decErr instanceof Error ? decErr.message : String(decErr)}`)
-          // 解密失败，删除损坏的文件
-          try { fs.unlinkSync(filePath) } catch {}
-          return null
-        }
-      } else {
-        pushLog('[AUTH] Cannot decrypt auth state: safeStorage unavailable and base64 decode failed')
-        try { fs.unlinkSync(filePath) } catch {}
-        return null
+      const json = Buffer.from(buf.toString('utf-8'), 'base64').toString('utf-8')
+      const parsed = JSON.parse(json) as AuthState
+      if (parsed && typeof parsed === 'object') {
+        return normalizeAuthState(parsed)
       }
+    } catch {
+      // 非 base64-JSON，继续尝试旧格式
     }
-    
-    const parsed = JSON.parse(json) as AuthState
-    if (!parsed || typeof parsed !== 'object') return null
-    return {
-      token: parsed.token || null,
-      refreshToken: parsed.refreshToken || null,
-      email: parsed.email || null,
-      userId: parsed.userId || null,
-      name: parsed.name || null,
+
+    // 2) 旧格式：safeStorage 加密
+    try {
+      const json = safeStorage.decryptString(buf)
+      const parsed = JSON.parse(json) as AuthState
+      if (parsed && typeof parsed === 'object') {
+        return normalizeAuthState(parsed)
+      }
+    } catch (decErr) {
+      pushLog(`[AUTH] Legacy safeStorage decrypt failed (expected after re-sign): ${decErr instanceof Error ? decErr.message : String(decErr)}`)
     }
+
+    // 3) 两种格式都无法解析：文件已不可恢复，删除
+    pushLog('[AUTH] Auth store unreadable (neither base64 nor decryptable), removing')
+    try { fs.unlinkSync(filePath) } catch {}
+    return null
   } catch (err) {
     pushLog(`[AUTH] Failed to load auth state: ${err instanceof Error ? err.message : String(err)}`)
     return null
+  }
+}
+
+/** 校验并补全认证状态字段 */
+function normalizeAuthState(parsed: Partial<AuthState>): AuthState {
+  return {
+    token: parsed.token || null,
+    refreshToken: parsed.refreshToken || null,
+    email: parsed.email || null,
+    userId: parsed.userId || null,
+    name: parsed.name || null,
   }
 }
 
@@ -910,6 +1191,8 @@ function startCallbackServer(): Promise<boolean> {
               mainWindow.show()
               mainWindow.focus()
             }
+            // v1.0.78: 若有网页端发起的挂起反向认证，登录成功后自动回传
+            completePendingWebAuthRedirect(payload)
             res.writeHead(200, { 'Content-Type': 'application/json' })
             res.end(JSON.stringify({ ok: true }))
           } else {
@@ -984,13 +1267,81 @@ function buildWebLoginUrl(): string {
 }
 
 /**
- * 处理 deep-link 回调：podcastai://login-success?token=...
- * 浏览器登录成功后通过 deep-link 回跳桌面端
+ * v1.0.78: 校验反向流程回传地址是否安全
+ * 仅允许本项目 Web 端（podcastai.clipopai.com / *.clipopai.com / 本地开发）
+ */
+function isSafeWebAuthRedirect(url: string): boolean {
+  try {
+    const u = new URL(url)
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return false
+    const h = u.hostname
+    return (
+      h === 'podcastai.clipopai.com' ||
+      h.endsWith('.clipopai.com') ||
+      h === 'localhost' ||
+      h === '127.0.0.1'
+    )
+  } catch {
+    return false
+  }
+}
+
+/**
+ * v1.0.78: 完成反向流程 —— 把 token 回传给网页端 /auth/desktop-callback
+ * 由登录成功（本地回调 POST / deep-link）后调用
+ */
+function completePendingWebAuthRedirect(state: AuthState) {
+  if (!pendingWebAuthRedirect || !state.token) return
+  try {
+    const u = new URL(pendingWebAuthRedirect)
+    u.searchParams.set('token', state.token)
+    if (state.refreshToken) u.searchParams.set('refreshToken', state.refreshToken)
+    if (state.email) u.searchParams.set('email', state.email)
+    pendingWebAuthRedirect = null
+    pushLog(`[AUTH] Completing web auth redirect → ${u.origin}${u.pathname}`)
+    shell.openExternal(u.toString()).catch(() => {})
+  } catch (err) {
+    pushLog(`[AUTH] Failed to complete web auth redirect: ${err instanceof Error ? err.message : String(err)}`)
+    pendingWebAuthRedirect = null
+  }
+}
+
+/**
+ * 处理 deep-link 回调：
+ * - podcastai://login-success?token=...  浏览器登录成功后回跳桌面端
+ * - podcastai://auth?redirect=...        网页端"启动桌面客户端"发起的反向认证
  */
 function handleDeepLink(url: string) {
   try {
     const parsed = new URL(url)
     if (parsed.protocol !== `${DESKTOP_SCHEME}:`) return
+
+    // v1.0.78: 反向流程 —— 网页端登录页"启动桌面客户端"按钮发起
+    if (parsed.host === 'auth') {
+      const redirect = parsed.searchParams.get('redirect') || ''
+      if (!isSafeWebAuthRedirect(redirect)) {
+        pushLog(`[AUTH] Rejected unsafe web auth redirect: ${redirect}`)
+        return
+      }
+      // 已登录：立即把 token 回传给网页端
+      if (authState.token) {
+        pushLog('[AUTH] Web auth request: already logged in, completing immediately')
+        pendingWebAuthRedirect = redirect
+        completePendingWebAuthRedirect(authState)
+      } else {
+        // 未登录：记录挂起地址，等用户在桌面端完成登录后自动回传
+        pendingWebAuthRedirect = redirect
+        pushLog('[AUTH] Web auth request: not logged in, waiting for desktop login')
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('auth:web-auth-requested', {})
+          if (mainWindow.isMinimized()) mainWindow.restore()
+          mainWindow.show()
+          mainWindow.focus()
+        }
+      }
+      return
+    }
+
     if (parsed.host !== 'login-success') return
 
     const params = parsed.searchParams
@@ -1011,6 +1362,8 @@ function handleDeepLink(url: string) {
     const ok = setAuthState(payload)
     if (ok) {
       pushLog(`[AUTH] Deep-link login success (email=${payload.email || 'unknown'})`)
+      // v1.0.78: 若有网页端发起的挂起反向认证，登录成功后自动回传
+      completePendingWebAuthRedirect(payload)
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('auth:login-success', {
           token: payload.token,
@@ -1046,8 +1399,16 @@ ipcMain.handle('auth:getState', async () => {
 
 // 打开 Web 端登录页（系统浏览器）
 ipcMain.handle('auth:openWebLogin', async () => {
+  // v1.0.78: macOS 关闭所有窗口时回调服务器已被 stopCallbackServer 停掉，
+  // 从 Dock 重开窗口（activate）不会重跑 whenReady，服务器可能仍是停止状态。
+  // 此处兜底：端口为 0 时先重启回调服务器，确保登录 URL 带上 callbackUrl
+  if (callbackPort === 0) {
+    pushLog('[AUTH] Callback server not running, restarting before opening web login...')
+    await startCallbackServer()
+  }
   const url = buildWebLoginUrl()
-  if (!url) {
+  const callbackUrl = getCallbackUrl()
+  if (!callbackUrl) {
     return { success: false, error: 'Callback server not started' }
   }
   try {
@@ -1214,6 +1575,37 @@ ipcMain.handle('model:open-dir', async () => {
   return true
 })
 
+// ─── v1.0.79: IPC 运行时管理 ───
+ipcMain.handle('runtime:status', async () => {
+  runtimeDownloadState.installed = checkRuntimeExists()
+  return { ...runtimeDownloadState }
+})
+
+ipcMain.handle('runtime:download', async () => {
+  const result = await downloadRuntime()
+  return result
+})
+
+ipcMain.handle('runtime:abort', async () => {
+  runtimeDownloadAborted = true
+  return true
+})
+
+ipcMain.handle('runtime:get-download-state', async () => {
+  return {
+    ...runtimeDownloadState,
+    percent: runtimeDownloadState.totalBytes > 0
+      ? Math.round((runtimeDownloadState.bytesDownloaded / runtimeDownloadState.totalBytes) * 100)
+      : 0,
+  }
+})
+
+ipcMain.handle('runtime:open-dir', async () => {
+  const dir = getPythonRuntimeDir()
+  shell.openPath(dir)
+  return true
+})
+
 // ─── IPC: shell ───
 ipcMain.handle('shell:openExternal', async (_, url: string) => {
   shell.openExternal(url)
@@ -1330,6 +1722,70 @@ ipcMain.handle('url:fetch', async (_, url: string) => {
   return fetchUrlInMain(url)
 })
 
+// ─── v1.0.79: 启动两级门控（自动起服务 + 自动下载模型/运行时） ───
+function autoDownloadModelIfNeeded() {
+  const modelStatus = checkModelExists()
+  if (!modelStatus.ready && !modelDownloadState.isDownloading) {
+    pushLog('Auto-downloading CosyVoice2 model...')
+    // 异步下载，不阻塞应用启动
+    downloadModel().then((result) => {
+      if (result.success) {
+        pushLog('✓ Model auto-download complete')
+      } else {
+        pushLog(`✗ Model auto-download failed: ${result.error}`)
+      }
+    }).catch((err) => {
+      pushLog(`✗ Model auto-download error: ${err}`)
+    })
+  }
+}
+
+async function autoStartVoiceAndModel() {
+  if (!checkRuntimeExists()) {
+    // 1) python 运行时缺失 → 先自动下载运行时，就绪后再起服务
+    pushLog('⚠ Python runtime not found, auto-downloading...')
+    const result = await downloadRuntime()
+    if (!result.success) {
+      pushLog(`⚠ Python runtime auto-download failed: ${result.error}`)
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('runtime:download-progress', {
+          ...runtimeDownloadState,
+          percent: 0,
+        })
+      }
+      return
+    }
+  }
+
+  if (checkRuntimeExists()) {
+    await startVoiceAndModel()
+  } else {
+    pushLog('⚠ Voice runtime not found, service not started')
+  }
+}
+
+async function startVoiceAndModel() {
+  pushLog('Auto-starting voice service...')
+  const result = await startVoiceService()
+  if (result.success) {
+    pushLog('✓ Voice service process started, waiting for HTTP ready...')
+    // 等待 HTTP 端点就绪（最长 120 秒，CosyVoice2 首次加载较慢）
+    const ready = await waitForService(120000)
+    if (ready) {
+      pushLog('✓ Voice service HTTP endpoint ready')
+    } else {
+      pushLog('⚠ Voice service HTTP endpoint not ready after 120s. Check logs for errors.')
+    }
+    // 通知渲染进程服务状态已更新
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('service:state-changed', { ready })
+    }
+  } else {
+    pushLog(`✗ Auto-start failed: ${result.error}`)
+  }
+  autoDownloadModelIfNeeded()
+}
+
 // ─── 单实例锁 + 自动启动 ───
 const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {
@@ -1368,6 +1824,14 @@ if (!gotTheLock) {
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
+        // v1.0.78: macOS 关闭全部窗口时 window-all-closed 已停掉回调服务器，
+        // 从 Dock 重开窗口必须重启服务器，否则"打开网页登录"的 URL 会缺失
+        // callbackUrl，导致网页登录后 token 无法回传（链路断）
+        if (!callbackServer || callbackPort === 0) {
+          startCallbackServer().then((ok) => {
+            pushLog(ok ? '[AUTH] Callback server restarted on activate' : '[AUTH] Failed to restart callback server on activate')
+          })
+        }
         createWindow()
       }
     })
@@ -1394,45 +1858,8 @@ if (!gotTheLock) {
       pushLog('[AUTH] No persisted token, user must login')
     }
 
-    // 自动启动服务
-    if (checkRuntimeExists()) {
-      pushLog('Auto-starting voice service...')
-      const result = await startVoiceService()
-      if (result.success) {
-        pushLog('✓ Voice service process started, waiting for HTTP ready...')
-        // 等待 HTTP 端点就绪（最长 120 秒，CosyVoice2 首次加载较慢）
-        const ready = await waitForService(120000)
-        if (ready) {
-          pushLog('✓ Voice service HTTP endpoint ready')
-        } else {
-          pushLog('⚠ Voice service HTTP endpoint not ready after 120s. Check logs for errors.')
-        }
-        // 通知渲染进程服务状态已更新
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('service:state-changed', { ready })
-        }
-      } else {
-        pushLog(`✗ Auto-start failed: ${result.error}`)
-      }
-
-      // 自动下载模型（如果未下载且当前没有在下载）
-      const modelStatus = checkModelExists()
-      if (!modelStatus.ready && !modelDownloadState.isDownloading) {
-        pushLog('Auto-downloading CosyVoice2 model...')
-        // 异步下载，不阻塞应用启动
-        downloadModel().then((result) => {
-          if (result.success) {
-            pushLog('✓ Model auto-download complete')
-          } else {
-            pushLog(`✗ Model auto-download failed: ${result.error}`)
-          }
-        }).catch((err) => {
-          pushLog(`✗ Model auto-download error: ${err}`)
-        })
-      }
-    } else {
-      pushLog('⚠ Voice runtime not found, service not started')
-    }
+    // v1.0.79 两级门控：运行时就绪 → 起服务 + 下载模型；否则先自动下载运行时
+    await autoStartVoiceAndModel()
     } catch (topErr) {
       // v1.0.36: 捕获 app.whenReady 中的所有异常
       try {

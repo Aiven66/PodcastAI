@@ -24,25 +24,62 @@ function CallbackContent() {
 
     const handleCallback = async () => {
       try {
-        // 获取OAuth回调的token
-        const accessToken = searchParams.get('access_token')
-        const refreshToken = searchParams.get('refresh_token')
+        // Supabase OAuth 回跳参数位于 URL hash（如 /auth/callback#code=xxx），而非 query string
+        // useSearchParams 读不到 hash，必须手动解析；query 参数作为兜底（兼容 implicit 流程）
+        const hash = window.location.hash.replace(/^#/, '')
+        const hashParams = new URLSearchParams(hash)
+
+        const accessToken = hashParams.get('access_token') || searchParams.get('access_token')
+        const refreshToken = hashParams.get('refresh_token') || searchParams.get('refresh_token')
+        const code = hashParams.get('code') || searchParams.get('code')
+        const errorParam =
+          hashParams.get('error_description') ||
+          searchParams.get('error_description') ||
+          hashParams.get('error') ||
+          searchParams.get('error')
+
+        if (errorParam) {
+          throw new Error(decodeURIComponent(errorParam))
+        }
 
         if (accessToken && refreshToken) {
-          // 设置session
+          // implicit 流程：直接设置 session
           const { error: sessionError } = await supabase.auth.setSession({
             access_token: accessToken,
             refresh_token: refreshToken,
           })
-
-          if (sessionError) {
-            throw sessionError
+          if (sessionError) throw sessionError
+        } else if (code) {
+          // PKCE 流程：显式交换 code -> session
+          // 若 supabase-js 初始化时已自动完成交换（hash 已被清除、code 已消费），以现有会话兜底
+          const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
+          if (exchangeError) {
+            const existing = await supabase.auth.getSession()
+            if (!existing.data.session) throw exchangeError
           }
+        } else {
+          // 无显式参数：supabase-js 正在后台用回跳数据异步恢复会话（detectSessionInUrl），
+          // 恢复尚未完成时 getSession() 会返回 null，必须轮询等待而不是立即判定失败
+          const deadline = Date.now() + 8000
+          let recovered = false
+          while (Date.now() < deadline) {
+            const { data } = await supabase.auth.getSession()
+            if (data.session) {
+              recovered = true
+              break
+            }
+            await new Promise((resolve) => setTimeout(resolve, 300))
+          }
+          if (!recovered) {
+            throw new Error('No authentication session found / 未检测到登录会话')
+          }
+        }
 
-          // 获取用户信息
-          const { data: { user } } = await supabase.auth.getUser()
+        // 会话建立后获取用户信息；若仍无法获取则如实报错，避免静默跳转导致"没登录"
+        const { data: { user }, error: userError } = await supabase.auth.getUser()
+        if (userError) throw userError
 
-          if (user) {
+        if (user) {
             // 创建或更新profile
             const session = await supabase.auth.getSession()
             if (session.data.session) {
@@ -94,16 +131,6 @@ function CallbackContent() {
           } else {
             setError('Failed to get user information')
           }
-        } else {
-          // 尝试使用supabase内置的回调处理
-          const { error: authError } = await supabase.auth.getSession()
-
-          if (authError) {
-            throw authError
-          }
-
-          router.push('/')
-        }
       } catch (err) {
         console.error('OAuth callback error:', err)
         setError((err as Error).message || 'Authentication failed')
@@ -111,7 +138,7 @@ function CallbackContent() {
     }
 
     handleCallback()
-  }, [router, searchParams])
+  }, [router, searchParams, supabase])
 
   if (error) {
     return (

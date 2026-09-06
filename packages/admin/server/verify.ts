@@ -6,9 +6,9 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { AppConfig } from '../core/config';
-import type { AdminVerifyResult, AppUser } from '../core/types';
-import { decodeJwt } from '../core/utils';
+import type { AppConfig } from '../../core/config';
+import type { AdminVerifyResult, AppUser } from '../../core/types';
+import { decodeJwt } from '../../core/utils';
 
 /** Table name mapping — allows hosts to customize schema names. */
 export interface AdminTableNames {

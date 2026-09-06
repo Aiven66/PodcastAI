@@ -39,18 +39,10 @@ const APP_ICON_URL =
 const DESKTOP_SCHEME = 'podcastai'
 
 type TabValue = 'login' | 'signup' | 'desktop'
-type SignupStep = 'info' | 'verify'
 
 interface CheckEmailResponse {
   exists?: boolean
   mode?: string
-  error?: string
-}
-
-interface SendCodeResponse {
-  success?: boolean
-  demo?: boolean
-  code?: string
   error?: string
 }
 
@@ -82,8 +74,7 @@ function LoginPageContent() {
   const searchParams = useSearchParams()
   const mode = searchParams.get('mode') || 'login'
 
-  const { locale } = useLocale()
-  const t = (en: string, zh: string) => (locale === 'en' ? en : zh)
+  const { t } = useLocale()
 
   const { user, accessToken, loading: authLoading, signIn, signUp, signInWithGoogle, signInWithDesktop, clearError } = useAuth()
 
@@ -95,26 +86,23 @@ function LoginPageContent() {
   const isDesktopFlow = mode === 'desktop' && !!normalizeDesktopCallbackUrl(desktopCallbackUrl)
   const safeCallbackUrl = isDesktopFlow ? normalizeDesktopCallbackUrl(desktopCallbackUrl)! : ''
 
+  // v1.0.78: 桌面端流程（mode=desktop）默认展示"登录"表单，而非"桌面端"tab
+  // 之前 mode=desktop → initialTab='desktop' 会展示"桌面客户端验证"（反向流程 UI），
+  // 从桌面端过来的用户被卡在循环验证界面，永远到不了登录表单
   const initialTab: TabValue =
-    mode === 'signup' ? 'signup' : mode === 'desktop' ? 'desktop' : 'login'
+    mode === 'signup' ? 'signup' : 'login'
 
   const [activeTab, setActiveTab] = useState<TabValue>(initialTab)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [name, setName] = useState('')
-  const [code, setCode] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
-
-  // Signup state
-  const [signupStep, setSignupStep] = useState<SignupStep>('info')
-  const [sendingCode, setSendingCode] = useState(false)
-  const [countdown, setCountdown] = useState(0)
 
   // Desktop state
   const [desktopLoading, setDesktopLoading] = useState(false)
@@ -214,15 +202,6 @@ function LoginPageContent() {
     router.replace('/')
   }, [user, accessToken, authLoading, router, isDesktopFlow, pushTokenToDesktop])
 
-  // Countdown timer using setTimeout pattern (re-creates on each tick)
-  useEffect(() => {
-    if (countdown <= 0) return
-    const timer = setTimeout(() => {
-      setCountdown((prev) => Math.max(0, prev - 1))
-    }, 1000)
-    return () => clearTimeout(timer)
-  }, [countdown])
-
   const clearMessages = () => {
     setError(null)
     setSuccess(null)
@@ -265,7 +244,7 @@ function LoginPageContent() {
     }
   }
 
-  const handleSendCode = async (e: React.FormEvent) => {
+  const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault()
     clearMessages()
     if (!name.trim()) {
@@ -285,7 +264,7 @@ function LoginPageContent() {
       return
     }
 
-    setSendingCode(true)
+    setIsLoading(true)
     try {
       // Check if email is already registered
       const checkRes = await fetch('/api/auth/check-email', {
@@ -305,42 +284,8 @@ function LoginPageContent() {
         return
       }
 
-      // Send verification code
-      const res = await fetch('/api/auth/send-verification-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
-      })
-      const data = (await res.json().catch(() => ({}))) as SendCodeResponse
-      if (!res.ok || !data.success) {
-        setError(data.error || t('Failed to send verification code', '验证码发送失败'))
-        return
-      }
-
-      setSignupStep('verify')
-      setCountdown(60)
-      if (data.demo && typeof data.code === 'string') {
-        setInfo(t(`Demo code: ${data.code}`, `演示验证码：${data.code}`))
-      } else {
-        setSuccess(t('Verification code sent. Check your inbox.', '验证码已发送，请查收邮件'))
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('Network error', '网络错误'))
-    } finally {
-      setSendingCode(false)
-    }
-  }
-
-  const handleVerify = async (e: React.FormEvent) => {
-    e.preventDefault()
-    clearMessages()
-    if (code.length !== 6) {
-      setError(t('Please enter the 6-digit code', '请输入 6 位验证码'))
-      return
-    }
-    setIsLoading(true)
-    try {
-      const result = await signUp(email, password, name.trim(), code)
+      // 直接注册（邮箱验证已由 Supabase mailer_autoconfirm 处理）
+      const result = await signUp(email, password, name.trim())
       if (result.error) {
         setError(result.error)
         return
@@ -363,34 +308,6 @@ function LoginPageContent() {
       setError(err instanceof Error ? err.message : t('Signup failed', '注册失败'))
     } finally {
       setIsLoading(false)
-    }
-  }
-
-  const handleResendCode = async () => {
-    if (countdown > 0 || sendingCode) return
-    clearMessages()
-    setSendingCode(true)
-    try {
-      const res = await fetch('/api/auth/send-verification-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
-      })
-      const data = (await res.json().catch(() => ({}))) as SendCodeResponse
-      if (!res.ok || !data.success) {
-        setError(data.error || t('Failed to resend code', '重新发送失败'))
-        return
-      }
-      setCountdown(60)
-      if (data.demo && typeof data.code === 'string') {
-        setInfo(t(`Demo code: ${data.code}`, `演示验证码：${data.code}`))
-      } else {
-        setSuccess(t('Verification code resent. Check your inbox.', '验证码已重新发送，请查收'))
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('Network error', '网络错误'))
-    } finally {
-      setSendingCode(false)
     }
   }
 
@@ -455,13 +372,6 @@ function LoginPageContent() {
   const handleCancelDesktop = () => {
     setDesktopLoading(false)
     setError(t('Desktop authentication cancelled', '桌面客户端认证已取消'))
-  }
-
-  const handleBackToInfo = () => {
-    setSignupStep('info')
-    setCode('')
-    setCountdown(0)
-    clearMessages()
   }
 
   // Show loader during initial auth state check
@@ -596,10 +506,13 @@ function LoginPageContent() {
             }}
             className="w-full"
           >
-            <TabsList className="grid w-full grid-cols-3">
+            {/* v1.0.78: 桌面端流程隐藏"桌面端"tab（循环流程无意义），只保留登录/注册 */}
+            <TabsList className={`grid w-full ${isDesktopFlow ? 'grid-cols-2' : 'grid-cols-3'}`}>
               <TabsTrigger value="login">{t('Login', '登录')}</TabsTrigger>
               <TabsTrigger value="signup">{t('Sign Up', '注册')}</TabsTrigger>
-              <TabsTrigger value="desktop">{t('Desktop', '桌面端')}</TabsTrigger>
+              {!isDesktopFlow && (
+                <TabsTrigger value="desktop">{t('Desktop', '桌面端')}</TabsTrigger>
+              )}
             </TabsList>
 
             {/* Login Tab */}
@@ -612,7 +525,7 @@ function LoginPageContent() {
                     <Input
                       id="login-email"
                       type="email"
-                      placeholder="admin@126.com"
+                      placeholder={t('your@email.com', '你的邮箱')}
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       className="pl-10 h-11"
@@ -660,10 +573,6 @@ function LoginPageContent() {
                 </Button>
               </form>
 
-              <div className="text-xs text-muted-foreground text-center">
-                {t('Demo Admin: admin@126.com / admin123', '演示管理员：admin@126.com / admin123')}
-              </div>
-
               <div className="relative">
                 <div className="absolute inset-0 flex items-center">
                   <Separator className="w-full" />
@@ -690,187 +599,132 @@ function LoginPageContent() {
                 {t('Continue with Google', '使用 Google 登录')}
               </Button>
 
-              <div className="text-center pt-1">
-                <Button
-                  type="button"
-                  variant="link"
-                  className="h-auto p-0 font-medium"
-                  onClick={() => setActiveTab('desktop')}
-                >
-                  <Monitor className="h-4 w-4 mr-1" />
-                  {t('Use Desktop App', '使用桌面客户端')}
-                </Button>
-              </div>
+              {/* v1.0.78: 桌面端流程隐藏"使用桌面客户端"入口（循环流程） */}
+              {!isDesktopFlow && (
+                <div className="text-center pt-1">
+                  <Button
+                    type="button"
+                    variant="link"
+                    className="h-auto p-0 font-medium"
+                    onClick={() => setActiveTab('desktop')}
+                  >
+                    <Monitor className="h-4 w-4 mr-1" />
+                    {t('Use Desktop App', '使用桌面客户端')}
+                  </Button>
+                </div>
+              )}
             </TabsContent>
 
             {/* Sign Up Tab */}
             <TabsContent value="signup" className="space-y-4">
-              {signupStep === 'info' ? (
-                <form onSubmit={handleSendCode} className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="signup-name">{t('Name', '姓名')}</Label>
-                    <div className="relative">
-                      <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                      <Input
-                        id="signup-name"
-                        type="text"
-                        placeholder={t('Your name', '你的姓名')}
-                        value={name}
-                        onChange={(e) => setName(e.target.value)}
-                        className="pl-10 h-11"
-                        disabled={sendingCode || busy}
-                        autoComplete="name"
-                      />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="signup-email">{t('Email', '邮箱')}</Label>
-                    <div className="relative">
-                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                      <Input
-                        id="signup-email"
-                        type="email"
-                        placeholder="your@email.com"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        className="pl-10 h-11"
-                        disabled={sendingCode || busy}
-                        autoComplete="email"
-                      />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="signup-password">{t('Password', '密码')}</Label>
-                    <div className="relative">
-                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                      <Input
-                        id="signup-password"
-                        type={showPassword ? 'text' : 'password'}
-                        placeholder="••••••••"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        className="pl-10 pr-10 h-11"
-                        disabled={sendingCode || busy}
-                        autoComplete="new-password"
-                        minLength={6}
-                      />
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="absolute right-0 top-0 h-full px-3"
-                        onClick={() => setShowPassword((v) => !v)}
-                        tabIndex={-1}
-                        aria-label={t('Toggle password visibility', '切换密码可见性')}
-                      >
-                        {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                      </Button>
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="signup-confirm">{t('Confirm Password', '确认密码')}</Label>
-                    <div className="relative">
-                      <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                      <Input
-                        id="signup-confirm"
-                        type={showConfirmPassword ? 'text' : 'password'}
-                        placeholder="••••••••"
-                        value={confirmPassword}
-                        onChange={(e) => setConfirmPassword(e.target.value)}
-                        className="pl-10 pr-10 h-11"
-                        disabled={sendingCode || busy}
-                        autoComplete="new-password"
-                        minLength={6}
-                      />
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="absolute right-0 top-0 h-full px-3"
-                        onClick={() => setShowConfirmPassword((v) => !v)}
-                        tabIndex={-1}
-                        aria-label={t('Toggle password visibility', '切换密码可见性')}
-                      >
-                        {showConfirmPassword ? (
-                          <EyeOff className="h-4 w-4" />
-                        ) : (
-                          <Eye className="h-4 w-4" />
-                        )}
-                      </Button>
-                    </div>
-                  </div>
-                  <Button
-                    type="submit"
-                    className="w-full h-11 text-base"
-                    disabled={sendingCode || busy}
-                  >
-                    {sendingCode ? (
-                      <>
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        {t('Sending code...', '正在发送验证码...')}
-                      </>
-                    ) : (
-                      t('Send Verification Code', '发送验证码')
-                    )}
-                  </Button>
-                </form>
-              ) : (
-                <form onSubmit={handleVerify} className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="signup-code">{t('Verification Code', '验证码')}</Label>
+              <form onSubmit={handleSignUp} className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="signup-name">{t('Name', '姓名')}</Label>
+                  <div className="relative">
+                    <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
-                      id="signup-code"
+                      id="signup-name"
                       type="text"
-                      inputMode="numeric"
-                      placeholder={t('Enter 6-digit code', '请输入 6 位验证码')}
-                      value={code}
-                      onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
-                      maxLength={6}
-                      className="h-12 text-center text-xl tracking-widest"
+                      placeholder={t('Your name', '你的姓名')}
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      className="pl-10 h-11"
                       disabled={busy}
-                      autoFocus
+                      autoComplete="name"
                     />
-                    <p className="text-xs text-muted-foreground text-center">
-                      {t(
-                        `We sent a verification code to ${email}`,
-                        `验证码已发送至 ${email}`
-                      )}
-                    </p>
                   </div>
-                  <Button type="submit" className="w-full h-11 text-base" disabled={busy}>
-                    {busy ? (
-                      <>
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        {t('Creating account...', '正在创建账号...')}
-                      </>
-                    ) : (
-                      t('Create Account', '创建账号')
-                    )}
-                  </Button>
-                  <div className="text-center text-sm text-muted-foreground">
-                    {t("Didn't receive the code? ", '没有收到验证码？')}
-                    <button
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="signup-email">{t('Email', '邮箱')}</Label>
+                  <div className="relative">
+                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      id="signup-email"
+                      type="email"
+                      placeholder="your@email.com"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="pl-10 h-11"
+                      disabled={busy}
+                      autoComplete="email"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="signup-password">{t('Password', '密码')}</Label>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      id="signup-password"
+                      type={showPassword ? 'text' : 'password'}
+                      placeholder="••••••••"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      className="pl-10 pr-10 h-11"
+                      disabled={busy}
+                      autoComplete="new-password"
+                      minLength={6}
+                    />
+                    <Button
                       type="button"
-                      className="text-primary hover:underline font-medium disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:no-underline"
-                      disabled={countdown > 0 || sendingCode}
-                      onClick={handleResendCode}
+                      variant="ghost"
+                      size="icon"
+                      className="absolute right-0 top-0 h-full px-3"
+                      onClick={() => setShowPassword((v) => !v)}
+                      tabIndex={-1}
+                      aria-label={t('Toggle password visibility', '切换密码可见性')}
                     >
-                      {countdown > 0
-                        ? t(`Resend in ${countdown}s`, `${countdown}s 后可重发`)
-                        : sendingCode
-                          ? t('Sending...', '发送中...')
-                          : t('Resend code', '重新发送')}
-                    </button>
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </Button>
                   </div>
-                  <button
-                    type="button"
-                    className="block mx-auto text-xs text-muted-foreground hover:underline"
-                    onClick={handleBackToInfo}
-                  >
-                    {t('← Back to edit info', '← 返回修改信息')}
-                  </button>
-                </form>
-              )}
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="signup-confirm">{t('Confirm Password', '确认密码')}</Label>
+                  <div className="relative">
+                    <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                    <Input
+                      id="signup-confirm"
+                      type={showConfirmPassword ? 'text' : 'password'}
+                      placeholder="••••••••"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      className="pl-10 pr-10 h-11"
+                      disabled={busy}
+                      autoComplete="new-password"
+                      minLength={6}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="absolute right-0 top-0 h-full px-3"
+                      onClick={() => setShowConfirmPassword((v) => !v)}
+                      tabIndex={-1}
+                      aria-label={t('Toggle password visibility', '切换密码可见性')}
+                    >
+                      {showConfirmPassword ? (
+                        <EyeOff className="h-4 w-4" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </div>
+                </div>
+                <Button
+                  type="submit"
+                  className="w-full h-11 text-base"
+                  disabled={busy}
+                >
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      {t('Creating account...', '正在创建账号...')}
+                    </>
+                  ) : (
+                    t('Create Account', '创建账号')
+                  )}
+                </Button>
+              </form>
 
               <div className="relative">
                 <div className="absolute inset-0 flex items-center">
@@ -888,7 +742,7 @@ function LoginPageContent() {
                 variant="outline"
                 className="w-full h-11 text-base border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-900"
                 onClick={handleGoogleLogin}
-                disabled={busy || sendingCode}
+                disabled={busy}
               >
                 <GoogleIcon className="h-5 w-5 mr-2" />
                 {t('Continue with Google', '使用 Google 登录')}

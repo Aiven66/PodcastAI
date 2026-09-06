@@ -1,19 +1,14 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { useLocale } from '@/components/locale-provider'
 import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Headphones, Sparkles, Users, Globe } from 'lucide-react'
 
 export default function AboutPage() {
-  const [locale, setLocale] = useState('en')
+  const { locale, t } = useLocale()
 
-  useEffect(() => {
-    const savedLocale = localStorage.getItem('locale') || 'en'
-    setLocale(savedLocale)
-  }, [])
-
-  const t = (en: string, zh: string) => locale === 'en' ? en : zh
 
   const features = [
     {
@@ -91,10 +86,10 @@ export default function AboutPage() {
                   </div>
                   <div>
                     <h3 className="font-bold mb-2">
-                      {locale === 'en' ? feature.title : feature.titleZh}
+                      {locale === 'zh' ? feature.titleZh : feature.title}
                     </h3>
                     <p className="text-muted-foreground text-sm">
-                      {locale === 'en' ? feature.desc : feature.descZh}
+                      {locale === 'zh' ? feature.descZh : feature.desc}
                     </p>
                   </div>
                 </div>

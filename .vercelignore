@@ -44,5 +44,5 @@ voice-service/voice-data/
 public/voice-clones/
 
 # 桌面客户端安装包（体积过大，通过 GitHub Release 分发）
-public/downloads/*
+public/downloads/**
 !public/downloads/.gitkeep
