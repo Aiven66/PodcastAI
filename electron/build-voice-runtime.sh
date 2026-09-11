@@ -39,7 +39,7 @@ case "$PLATFORM" in
     PYTHON_SUBDIR="python"
     ;;
   win-x64)
-    PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/cpython-${PYTHON_VERSION}%2B${PBS_RELEASE}-x86_64-pc-windows-msvc-shared-install_only.tar.gz"
+    PBS_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/cpython-${PYTHON_VERSION}%2B${PBS_RELEASE}-x86_64-pc-windows-msvc-install_only.tar.gz"
     PYTHON_SUBDIR="python"
     ;;
   *)
