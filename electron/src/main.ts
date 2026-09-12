@@ -146,7 +146,8 @@ let runtimeDownloadAborted = false
 
 // 运行时归档下载源（GitHub Release 主源 + 预留镜像回退，与 MODEL_DOWNLOAD_URLS 同构）
 // v1.0.78: 按平台/架构选择对应归档（mac 用 python/bin/python3，win 用 python/python.exe）
-const RUNTIME_RELEASE_BASE = 'https://github.com/Aiven66/PodcastAI/releases/download/runtime'
+// 运行时归档与安装包统一放在 1.0.78 release 下分发
+const RUNTIME_RELEASE_BASE = 'https://github.com/Aiven66/PodcastAI/releases/download/1.0.78'
 const RUNTIME_ARCHIVE_VERSION = '3.10.20-20260623'
 
 function getRuntimeArchiveUrl(): string {

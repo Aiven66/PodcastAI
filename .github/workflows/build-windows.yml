@@ -11,6 +11,9 @@ name: Build Windows Desktop
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -44,6 +47,15 @@ jobs:
         run: |
           pnpm build
           pnpm pack:win
+
+      - name: Upload runtime archive to 1.0.78 release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload 1.0.78 electron/dist/python-runtime-win-x64-*.tar.gz --repo "$GITHUB_REPOSITORY" --clobber
+          echo "Uploaded runtime archive to release 1.0.78"
+          gh release view 1.0.78 --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'
 
       - name: Upload artifacts (runtime archive + installer)
         uses: actions/upload-artifact@v4
