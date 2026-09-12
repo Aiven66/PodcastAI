@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { mapBlogRow, generateBlogSlug, requireBlogAuthor, fetchBlogRow, summarizeHtml } from '@/lib/blog-server';
+import { sanitizeHtmlContent } from '@packages/blog/sanitize';
+import { mapBlogRow, generateBlogSlug, requireBlogAuthor, checkBlogAdmin, fetchBlogRow, summarizeHtml } from '@/lib/blog-server';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import type { BlogPost } from '@packages/core/types';
 
@@ -23,13 +24,17 @@ export async function GET(request: NextRequest) {
     const pageSize = Math.min(100, Math.max(1, Number(url.searchParams.get('pageSize')) || 10));
     const category = url.searchParams.get('category') || undefined;
     const locale = url.searchParams.get('locale') || undefined;
+    const includeUnpublished = url.searchParams.get('includeUnpublished') === 'true';
+
+    // includeUnpublished 仅管理员可用（管理后台列表需展示草稿），否则强制只看已发布。
+    const canViewDrafts = includeUnpublished && (await checkBlogAdmin(request));
 
     const client = getSupabaseClient();
 
     let query = client
       .from('blogs')
-      .select('*', { count: 'exact' })
-      .eq('is_published', true);
+      .select('*', { count: 'exact' });
+    if (!canViewDrafts) query = query.eq('is_published', true);
     if (category) query = query.eq('category', category);
     if (locale) query = query.eq('language', locale);
 
@@ -70,6 +75,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized: author profile not found' }, { status: 401 });
     }
 
+    // 支持 HTML 导入/富文本，入库前统一清理（脚本/事件处理器等）
+    const safeContent = sanitizeHtmlContent(content);
+
     const now = new Date().toISOString();
     const { data, error } = await guard.author.client
       .from('blogs')
@@ -80,8 +88,8 @@ export async function POST(request: NextRequest) {
         category: typeof body.category === 'string' && body.category.trim()
           ? body.category.trim()
           : 'General',
-        summary: summarizeHtml(content) || null,
-        content,
+        summary: summarizeHtml(safeContent) || null,
+        content: safeContent,
         cover_image_url: typeof body.coverImage === 'string' ? body.coverImage : null,
         is_published: body.publish === undefined ? true : Boolean(body.publish),
         language: 'en',
@@ -131,8 +139,9 @@ export async function PATCH(request: NextRequest) {
     if (typeof body.title === 'string' && body.title.trim()) patch.title = body.title.trim();
     if (typeof body.category === 'string' && body.category.trim()) patch.category = body.category.trim();
     if (typeof body.content === 'string') {
-      patch.content = body.content;
-      patch.summary = summarizeHtml(body.content) || null;
+      const safeContent = sanitizeHtmlContent(body.content);
+      patch.content = safeContent;
+      patch.summary = summarizeHtml(safeContent) || null;
     }
     if (typeof body.coverImage === 'string') patch.cover_image_url = body.coverImage;
     if (body.publish !== undefined) patch.is_published = Boolean(body.publish);

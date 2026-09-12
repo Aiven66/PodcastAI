@@ -91,6 +91,9 @@ async function handleJsonError(res: Response): Promise<never> {
  * Fetch a paginated list of blog posts.
  *
  * Calls: GET /api/blog/posts?page=N&pageSize=N&category=...&locale=...
+ *
+ * `includeUnpublished: true` + `token`（管理员）时返回含草稿的全部文章，
+ * 供管理后台列表使用；前台不传 token 只能看到已发布文章。
  */
 export async function fetchBlogPosts(
   _config: AppConfig,
@@ -99,16 +102,19 @@ export async function fetchBlogPosts(
     pageSize?: number;
     category?: string;
     locale?: Locale;
+    includeUnpublished?: boolean;
   } = {},
+  token?: string | null,
 ): Promise<BlogPostListResponse> {
   const url = buildUrl('/api/blog/posts', {
     page: params.page ?? 1,
     pageSize: params.pageSize ?? 10,
     category: params.category,
     locale: params.locale,
+    includeUnpublished: params.includeUnpublished ? 'true' : undefined,
   });
 
-  const res = await fetch(url, { headers: JSON_HEADERS });
+  const res = await fetch(url, { headers: authHeaders(token) });
   if (!res.ok) await handleJsonError(res);
   const data = await res.json() as BlogPostListResponse & { posts?: BlogPost[] };
   return {

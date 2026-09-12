@@ -14,10 +14,7 @@ import {
   TableCell,
 } from '@/components/ui/table'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
-import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Progress } from '@/components/ui/progress'
 import {
   Loader2,
@@ -26,10 +23,7 @@ import {
   Zap,
   Crown,
   FileText,
-  Plus,
   Trash2,
-  Edit,
-  Save,
   Search,
   DollarSign,
   BarChart3,
@@ -68,16 +62,6 @@ interface UserRow {
   isSystemAdmin: boolean
 }
 
-interface BlogItem {
-  id: string
-  title: string
-  category: string
-  excerpt: string
-  content: string
-  cover_image: string
-  created_at: string
-}
-
 interface PodcastHistoryItem {
   podcastId: string
   title: string
@@ -98,7 +82,6 @@ interface VoiceCloneItem {
 // ============= Constants =============
 const DEMO_REGISTERED_USERS_KEY = 'podcastai_registered_users'
 const PODCAST_HISTORY_KEY = 'podcastHistory'
-const ADMIN_BLOGS_KEY = 'admin_blogs'
 const ADMIN_EMAIL = 'admin@126.com'
 
 // @packages/auth 的持久化键与同步事件（见 packages/auth/auth-provider.tsx / README）。
@@ -107,14 +90,6 @@ const ADMIN_EMAIL = 'admin@126.com'
 const PACKAGE_AUTH_USER_KEY = 'app_demo_user'
 const PACKAGE_AUTH_TOKEN_KEY = 'app_access_token'
 const PACKAGE_AUTH_CHANGE_EVENT = 'app-auth-change'
-
-const BLOG_CATEGORIES: ReadonlyArray<{ id: string; name: string; nameZh: string }> = [
-  { id: 'podcast-tips', name: 'Podcast Tips', nameZh: '播客技巧' },
-  { id: 'ai-tools', name: 'AI Tools', nameZh: 'AI工具' },
-  { id: 'voice-cloning', name: 'Voice Cloning', nameZh: '声音克隆' },
-  { id: 'news', name: 'News', nameZh: '新闻' },
-  { id: 'tutorials', name: 'Tutorials', nameZh: '教程' },
-]
 
 interface SubscriptionPlan {
   id: string
@@ -167,15 +142,6 @@ function safeParseArray<T>(raw: string | null): T[] {
   }
 }
 
-function formatIsoDate(iso: string | undefined): string {
-  if (!iso) return '-'
-  try {
-    return format(new Date(iso), 'yyyy-MM-dd HH:mm')
-  } catch {
-    return '-'
-  }
-}
-
 function joinDateFromUserId(id: string): string {
   // Demo user IDs are formatted as `demo-{Date.now()}`
   const match = /^demo-(\d+)$/.exec(id)
@@ -203,26 +169,11 @@ export default function AdminPage() {
   const [registeredUsers, setRegisteredUsers] = useState<RegisteredUser[]>([])
   const [podcastHistory, setPodcastHistory] = useState<PodcastHistoryItem[]>([])
   const [voiceClones, setVoiceClones] = useState<VoiceCloneItem[]>([])
-  const [blogs, setBlogs] = useState<BlogItem[]>([])
+  // 已发布博客总数（Supabase blogs 表，供仪表板统计卡展示）
+  const [blogTotal, setBlogTotal] = useState(0)
 
   // Users tab
   const [searchQuery, setSearchQuery] = useState('')
-
-  // Blog form
-  const [blogForm, setBlogForm] = useState({
-    title: '',
-    category: 'podcast-tips',
-    excerpt: '',
-    content: '',
-    cover_image: '',
-  })
-  const [editingBlog, setEditingBlog] = useState<BlogItem | null>(null)
-  const [showBlogForm, setShowBlogForm] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [message, setMessage] = useState<{
-    type: 'success' | 'error'
-    text: string
-  } | null>(null)
 
   // ============= Access Control + Initial Load =============
   useEffect(() => {
@@ -239,12 +190,12 @@ export default function AdminPage() {
     setInitialized(true)
   }, [user, loading, router])
 
-  // 支持 /admin?tab=analytics 直达「数据分析」tab（博客页「管理博客」入口使用）
+  // 支持 /admin?tab=analytics /admin?tab=blogs 直达指定 tab（博客页「管理博客」入口使用）
   useEffect(() => {
     if (typeof window === 'undefined') return
     const tab = new URLSearchParams(window.location.search).get('tab')
-    if (tab === 'analytics') {
-      setActiveTab('analytics')
+    if (tab === 'analytics' || tab === 'blogs') {
+      setActiveTab(tab)
     }
   }, [])
 
@@ -274,9 +225,16 @@ export default function AdminPage() {
     const podcastRaw = localStorage.getItem(PODCAST_HISTORY_KEY)
     setPodcastHistory(safeParseArray<PodcastHistoryItem>(podcastRaw))
 
-    // Blogs
-    const blogsRaw = localStorage.getItem(ADMIN_BLOGS_KEY)
-    setBlogs(safeParseArray<BlogItem>(blogsRaw))
+    // 已发布博客总数（Supabase）
+    try {
+      const res = await fetch('/api/blog/posts?page=1&pageSize=1')
+      if (res.ok) {
+        const data = (await res.json()) as { total?: number }
+        setBlogTotal(data.total ?? 0)
+      }
+    } catch {
+      // best-effort，失败保持 0
+    }
 
     // Voice clones via API (best-effort, demo mode may return empty)
     try {
@@ -398,110 +356,7 @@ export default function AdminPage() {
     }
   }
 
-  // ============= Blog Actions =============
-  const resetBlogForm = () => {
-    setBlogForm({
-      title: '',
-      category: 'podcast-tips',
-      excerpt: '',
-      content: '',
-      cover_image: '',
-    })
-    setEditingBlog(null)
-    setShowBlogForm(false)
-  }
-
-  const handleSaveBlog = () => {
-    if (!blogForm.title.trim() || !blogForm.content.trim()) {
-      setMessage({
-        type: 'error',
-        text: t('Title and content are required', '标题和内容必填'),
-      })
-      return
-    }
-    setSaving(true)
-    setMessage(null)
-    try {
-      const now = new Date().toISOString()
-      let updated: BlogItem[]
-      if (editingBlog) {
-        updated = blogs.map(b =>
-          b.id === editingBlog.id
-            ? {
-                ...b,
-                title: blogForm.title,
-                category: blogForm.category,
-                excerpt: blogForm.excerpt,
-                content: blogForm.content,
-                cover_image: blogForm.cover_image,
-              }
-            : b,
-        )
-        setMessage({
-          type: 'success',
-          text: t('Blog updated successfully', '博客更新成功'),
-        })
-      } else {
-        const newBlog: BlogItem = {
-          id: `blog-${Date.now()}`,
-          title: blogForm.title,
-          category: blogForm.category,
-          excerpt: blogForm.excerpt,
-          content: blogForm.content,
-          cover_image: blogForm.cover_image,
-          created_at: now,
-        }
-        updated = [newBlog, ...blogs]
-        setMessage({
-          type: 'success',
-          text: t('Blog created successfully', '博客创建成功'),
-        })
-      }
-      setBlogs(updated)
-      try {
-        localStorage.setItem(ADMIN_BLOGS_KEY, JSON.stringify(updated))
-      } catch {
-        // ignore write errors
-      }
-      resetBlogForm()
-    } catch {
-      setMessage({ type: 'error', text: t('Failed to save blog', '保存失败') })
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const handleEditBlog = (blog: BlogItem) => {
-    setEditingBlog(blog)
-    setBlogForm({
-      title: blog.title,
-      category: blog.category,
-      excerpt: blog.excerpt || '',
-      content: blog.content || '',
-      cover_image: blog.cover_image || '',
-    })
-    setShowBlogForm(true)
-    setMessage(null)
-  }
-
-  const handleDeleteBlog = (blogId: string) => {
-    if (
-      !confirm(
-        t('Are you sure you want to delete this blog?', '确定要删除这篇博客吗？'),
-      )
-    )
-      return
-    const updated = blogs.filter(b => b.id !== blogId)
-    setBlogs(updated)
-    try {
-      localStorage.setItem(ADMIN_BLOGS_KEY, JSON.stringify(updated))
-    } catch {
-      // ignore write errors
-    }
-    if (editingBlog?.id === blogId) {
-      resetBlogForm()
-    }
-  }
+  // ============= Blog Actions（见「博客管理」Tab：AdminBlogManager 全量托管）============
 
   // ============= Render =============
   if (loading || !initialized) {
@@ -665,7 +520,7 @@ export default function AdminPage() {
                   <span className="text-sm text-muted-foreground">
                     {t('Blogs Published', '已发布博客')}
                   </span>
-                  <Badge variant="outline">{blogs.length}</Badge>
+                  <Badge variant="outline">{blogTotal}</Badge>
                 </div>
               </CardContent>
             </Card>
@@ -884,234 +739,14 @@ export default function AdminPage() {
           </TabsContent>
 
           {/* ============= Blogs Tab ============= */}
+          {/* AdminBlogManager 全量托管博客 CRUD：
+              上传 HTML 文件自动提取标题/正文、封面图片上传、
+              发布/取消发布、编辑、删除、多语言翻译 */}
           <TabsContent value="blogs" className="space-y-6">
-            {message && (
-              <Alert variant={message.type === 'error' ? 'destructive' : 'default'}>
-                <AlertDescription>{message.text}</AlertDescription>
-              </Alert>
-            )}
-
-            {/* Blog Form */}
-            {showBlogForm && (
-              <Card>
-                <CardHeader>
-                  <CardTitle>
-                    {editingBlog
-                      ? t('Edit Blog', '编辑博客')
-                      : t('Create New Blog', '创建新博客')}
-                  </CardTitle>
-                  <CardDescription>
-                    {t('Fill in the details below', '填写以下详细信息')}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="blog-title">{t('Title', '标题')}</Label>
-                    <Input
-                      id="blog-title"
-                      value={blogForm.title}
-                      onChange={e =>
-                        setBlogForm(prev => ({ ...prev, title: e.target.value }))
-                      }
-                      placeholder={t('Blog title', '博客标题')}
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>{t('Category', '分类')}</Label>
-                    <div className="flex flex-wrap gap-2">
-                      {BLOG_CATEGORIES.map(cat => (
-                        <Button
-                          key={cat.id}
-                          type="button"
-                          size="sm"
-                          variant={
-                            blogForm.category === cat.id ? 'default' : 'outline'
-                          }
-                          onClick={() =>
-                            setBlogForm(prev => ({ ...prev, category: cat.id }))
-                          }
-                        >
-                          {t(cat.name, cat.nameZh)}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="blog-excerpt">{t('Excerpt', '摘要')}</Label>
-                    <Input
-                      id="blog-excerpt"
-                      value={blogForm.excerpt}
-                      onChange={e =>
-                        setBlogForm(prev => ({ ...prev, excerpt: e.target.value }))
-                      }
-                      placeholder={t('Short description', '简短描述')}
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="blog-cover">{t('Cover Image URL', '封面图片URL')}</Label>
-                    <Input
-                      id="blog-cover"
-                      value={blogForm.cover_image}
-                      onChange={e =>
-                        setBlogForm(prev => ({
-                          ...prev,
-                          cover_image: e.target.value,
-                        }))
-                      }
-                      placeholder="https://..."
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="blog-content">
-                      {t('Content (HTML supported)', '内容（支持HTML）')}
-                    </Label>
-                    <Textarea
-                      id="blog-content"
-                      value={blogForm.content}
-                      onChange={e =>
-                        setBlogForm(prev => ({ ...prev, content: e.target.value }))
-                      }
-                      placeholder={t(
-                        'Write your blog content here. HTML tags supported.',
-                        '在此编写博客内容。支持 HTML 标签。',
-                      )}
-                      className="min-h-[240px] font-mono text-sm"
-                    />
-                  </div>
-
-                  <div className="flex gap-3">
-                    <Button onClick={handleSaveBlog} disabled={saving}>
-                      {saving ? (
-                        <>
-                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                          {t('Saving...', '保存中...')}
-                        </>
-                      ) : (
-                        <>
-                          <Save className="h-4 w-4 mr-2" />
-                          {t('Save Blog', '保存博客')}
-                        </>
-                      )}
-                    </Button>
-                    <Button variant="outline" onClick={resetBlogForm}>
-                      {t('Cancel', '取消')}
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Blog List */}
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0">
-                <div>
-                  <CardTitle>{t('Published Blogs', '已发布博客')}</CardTitle>
-                  <CardDescription>
-                    {t(`${blogs.length} blog(s) total`, `共 ${blogs.length} 篇博客`)}
-                  </CardDescription>
-                </div>
-                {!showBlogForm && (
-                  <Button
-                    onClick={() => {
-                      resetBlogForm()
-                      setShowBlogForm(true)
-                    }}
-                  >
-                    <Plus className="h-4 w-4 mr-2" />
-                    {t('New Blog', '新建博客')}
-                  </Button>
-                )}
-              </CardHeader>
-              <CardContent>
-                {blogs.length === 0 ? (
-                  <div className="text-center py-12">
-                    <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-                    <p className="text-muted-foreground mb-4">
-                      {t('No blogs published yet.', '暂无已发布博客。')}
-                    </p>
-                    {!showBlogForm && (
-                      <Button
-                        variant="outline"
-                        onClick={() => {
-                          resetBlogForm()
-                          setShowBlogForm(true)
-                        }}
-                      >
-                        <Plus className="h-4 w-4 mr-2" />
-                        {t('Create Your First Blog', '创建第一篇博客')}
-                      </Button>
-                    )}
-                  </div>
-                ) : (
-                  <div className="border rounded-lg">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>{t('Title', '标题')}</TableHead>
-                          <TableHead>{t('Category', '分类')}</TableHead>
-                          <TableHead>{t('Created At', '创建时间')}</TableHead>
-                          <TableHead className="text-right">
-                            {t('Actions', '操作')}
-                          </TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {blogs.map(blog => {
-                          const cat = BLOG_CATEGORIES.find(
-                            c => c.id === blog.category,
-                          )
-                          return (
-                            <TableRow key={blog.id}>
-                              <TableCell className="font-medium max-w-xs">
-                                <div className="truncate">{blog.title}</div>
-                                {blog.excerpt && (
-                                  <div className="text-xs text-muted-foreground truncate mt-1">
-                                    {blog.excerpt}
-                                  </div>
-                                )}
-                              </TableCell>
-                              <TableCell>
-                                <Badge variant="outline">
-                                  {cat ? t(cat.name, cat.nameZh) : blog.category}
-                                </Badge>
-                              </TableCell>
-                              <TableCell className="text-xs text-muted-foreground">
-                                {formatIsoDate(blog.created_at)}
-                              </TableCell>
-                              <TableCell className="text-right">
-                                <div className="flex items-center justify-end gap-1">
-                                  <Button
-                                    size="icon"
-                                    variant="ghost"
-                                    onClick={() => handleEditBlog(blog)}
-                                    title={t('Edit', '编辑')}
-                                  >
-                                    <Edit className="h-4 w-4" />
-                                  </Button>
-                                  <Button
-                                    size="icon"
-                                    variant="ghost"
-                                    onClick={() => handleDeleteBlog(blog.id)}
-                                    className="text-destructive hover:text-destructive"
-                                    title={t('Delete', '删除')}
-                                  >
-                                    <Trash2 className="h-4 w-4" />
-                                  </Button>
-                                </div>
-                              </TableCell>
-                            </TableRow>
-                          )
-                        })}
-                      </TableBody>
-                    </Table>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+            <AdminBlogManager
+              token={accessToken ?? ''}
+              locale={locale === 'zh' ? 'zh' : 'en'}
+            />
           </TabsContent>
 
           {/* ============= Behavior Tab ============= */}
