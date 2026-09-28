@@ -24,13 +24,23 @@ export interface DesktopAuthResult {
   error: string | null;
 }
 
+export interface SignUpResult {
+  error: string | null;
+  /** 需要用户点击邮件中的确认链接完成邮箱验证，之后才能登录 */
+  requiresEmailConfirmation: boolean;
+  token?: string | null;
+  refreshToken?: string | null;
+  email?: string;
+}
+
 export interface AuthContextType {
   user: User | null;
   accessToken: string | null;
   loading: boolean;
   error: string | null;
   signIn: (email: string, password: string) => Promise<{ error: string | null; token?: string | null; refreshToken?: string | null; email?: string }>;
-  signUp: (email: string, password: string, name: string, verificationCode?: string) => Promise<{ error: string | null; token?: string | null; refreshToken?: string | null; email?: string }>;
+  signUp: (email: string, password: string, name: string) => Promise<SignUpResult>;
+  resendConfirmation: (email: string) => Promise<{ error: string | null }>;
   signInWithGoogle: () => Promise<{ error: string | null }>;
   signInWithDesktop: () => Promise<DesktopAuthResult>;
   verifyDesktopToken: (token: string) => Promise<DesktopAuthResult>;
@@ -125,6 +135,50 @@ function getDemoAdminUser(email: string): User {
     role: 'admin',
     avatarUrl: null,
   };
+}
+
+/**
+ * Demo 模式注册（仅用于未配置 Supabase 的本地/离线场景）
+ * 写入 localStorage 并返回可用的 demo token
+ */
+function registerDemoUser(
+  email: string,
+  password: string,
+  name: string
+): { error: string | null; user?: User; token?: string } {
+  const existing = getRegisteredUsers().find(
+    u => u.email.toLowerCase() === email.toLowerCase()
+  );
+  if (existing) {
+    return { error: 'This email is already registered / 邮箱已被注册' };
+  }
+
+  const user: User = {
+    id: `demo-${Date.now()}`,
+    email,
+    name,
+    role: 'user',
+    avatarUrl: null,
+  };
+  const token = generateDemoToken(user);
+  saveRegisteredUser({ id: user.id, email, password, name });
+  saveDemoUser(user);
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(DEMO_ACCESS_TOKEN_KEY, token);
+  }
+  return { error: null, user, token };
+}
+
+/**
+ * 邮箱确认邮件的回跳地址
+ * 保留当前查询参数（桌面端流程的 ?mode=desktop&callbackUrl=... 因此得以保留），
+ * 并额外带上 confirmed=1，便于登录页在未自动建立会话时给出提示
+ */
+function getEmailRedirectUrl(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const params = new URLSearchParams(window.location.search);
+  params.set('confirmed', '1');
+  return `${window.location.origin}${window.location.pathname}?${params.toString()}`;
 }
 
 // ============= JWT 工具 (Demo 模式) =============
@@ -482,146 +536,86 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     email: string,
     password: string,
     name: string,
-    verificationCode?: string,
-  ) => {
+  ): Promise<SignUpResult> => {
     setError(null);
 
-    // 邮箱验证码校验（如果传入了验证码）
-    if (verificationCode) {
-      try {
-        const verifyResp = await fetch('/api/auth/send-verification-code', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, code: verificationCode }),
-        });
-        const verifyData = await verifyResp.json() as { verified?: boolean; error?: string };
-        if (!verifyResp.ok || !verifyData.verified) {
-          const errMsg = verifyData.error || 'Invalid verification code / 验证码错误';
-          return { error: errMsg, token: null };
-        }
-      } catch (err) {
-        return {
-          error: err instanceof Error ? err.message : 'Failed to verify code / 验证码校验失败',
-          token: null,
-        };
-      }
-    }
-
-    // Demo 模式注册
+    // Demo 模式注册（未配置 Supabase）
     if (!supabase) {
-      const existingUsers = getRegisteredUsers();
-      const existing = existingUsers.find(u => u.email.toLowerCase() === email.toLowerCase());
-      if (existing) {
-        return { error: 'This email is already registered / 邮箱已被注册', token: null };
+      const demo = registerDemoUser(email, password, name);
+      if (demo.error) {
+        return { error: demo.error, requiresEmailConfirmation: false, token: null };
       }
-
-      const userId = `demo-${Date.now()}`;
-      saveRegisteredUser({ id: userId, email, password, name });
-
-      const user: User = {
-        id: userId,
-        email,
-        name,
-        role: 'user',
-        avatarUrl: null,
-      };
-      const demoToken = generateDemoToken(user);
-      saveDemoUser(user);
-      setDemoUser(user);
-      setAccessToken(demoToken);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(DEMO_ACCESS_TOKEN_KEY, demoToken);
-      }
-      return { error: null, token: demoToken, email };
+      setDemoUser(demo.user ?? null);
+      setAccessToken(demo.token ?? null);
+      return { error: null, requiresEmailConfirmation: false, token: demo.token, email };
     }
 
-    // Supabase 注册（带 try-catch + demo fallback）
-    // v1.0.33: 修复网络错误时注册失败的问题
+    // Supabase 注册：创建未确认用户，并由 Supabase 发送邮箱确认邮件
+    // mailer_autoconfirm=false，注册在用户点击邮件里的确认链接后才算完成
     try {
       const { data, error: authError } = await supabase.auth.signUp({
         email,
         password,
         options: {
           data: { name },
+          emailRedirectTo: getEmailRedirectUrl(),
         },
       });
 
       if (authError) {
-        // Supabase 报错时，fallback 到 demo 注册
-        // 常见情况：邮箱已注册、Supabase 配置异常等
-        const existingUsers = getRegisteredUsers();
-        const existing = existingUsers.find(u => u.email.toLowerCase() === email.toLowerCase());
-        if (existing) {
-          return { error: 'This email is already registered / 邮箱已被注册', token: null };
-        }
-        const userId = `demo-${Date.now()}`;
-        saveRegisteredUser({ id: userId, email, password, name });
-        const user: User = {
-          id: userId,
-          email,
-          name,
-          role: 'user',
-          avatarUrl: null,
+        return { error: authError.message, requiresEmailConfirmation: false, token: null };
+      }
+
+      // Supabase 为防止邮箱枚举，对已注册邮箱会返回 identities 为空的假用户
+      if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+        return {
+          error: 'This email is already registered / 邮箱已被注册',
+          requiresEmailConfirmation: false,
+          token: null,
         };
-        const demoToken = generateDemoToken(user);
-        saveDemoUser(user);
-        setDemoUser(user);
-        setAccessToken(demoToken);
-        if (typeof window !== 'undefined') {
-          localStorage.setItem(DEMO_ACCESS_TOKEN_KEY, demoToken);
-        }
-        return { error: null, token: demoToken, email };
       }
 
-      if (data.user) {
-        try {
-          // credits_balance / subscription_tier 由表默认值填充（100 / free）
-          await supabase.from('profiles').upsert({
-            user_id: data.user.id,
-            email,
-            name,
-            role: 'user',
-          }, { onConflict: 'user_id' });
-        } catch {
-          // DB 操作失败不影响注册成功
-        }
-      }
-
+      // 开启邮件确认后不会有 session，需等待用户点击确认链接
       const { data: { session } } = await supabase.auth.getSession();
-      const token = session?.access_token || null;
-      if (token) {
-        setAccessToken(token);
+      if (!session) {
+        return { error: null, requiresEmailConfirmation: true, token: null, email };
       }
+
+      setAccessToken(session.access_token);
       return {
         error: null,
-        token,
-        refreshToken: session?.refresh_token || null,
+        requiresEmailConfirmation: false,
+        token: session.access_token,
+        refreshToken: session.refresh_token,
         email,
       };
-    } catch {
-      // 网络错误（如 "Failed to fetch"）：fallback 到 demo 注册
-      const existingUsers = getRegisteredUsers();
-      const existing = existingUsers.find(u => u.email.toLowerCase() === email.toLowerCase());
-      if (existing) {
-        return { error: 'This email is already registered / 邮箱已被注册', token: null };
-      }
-      const userId = `demo-${Date.now()}`;
-      saveRegisteredUser({ id: userId, email, password, name });
-      const user: User = {
-        id: userId,
-        email,
-        name,
-        role: 'user',
-        avatarUrl: null,
+    } catch (err) {
+      return {
+        error: err instanceof Error ? err.message : 'Signup failed / 注册失败',
+        requiresEmailConfirmation: false,
+        token: null,
       };
-      const demoToken = generateDemoToken(user);
-      saveDemoUser(user);
-      setDemoUser(user);
-      setAccessToken(demoToken);
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(DEMO_ACCESS_TOKEN_KEY, demoToken);
-      }
-      return { error: null, token: demoToken, email };
+    }
+  }, [supabase]);
+
+  const resendConfirmation = useCallback(async (email: string) => {
+    setError(null);
+    if (!supabase) {
+      return {
+        error: 'Email confirmation requires Supabase configuration / 邮箱确认需要 Supabase 配置',
+      };
+    }
+    try {
+      const { error: resendError } = await supabase.auth.resend({
+        type: 'signup',
+        email,
+        options: { emailRedirectTo: getEmailRedirectUrl() },
+      });
+      return { error: resendError ? resendError.message : null };
+    } catch (err) {
+      return {
+        error: err instanceof Error ? err.message : 'Failed to resend email / 重发邮件失败',
+      };
     }
   }, [supabase]);
 
@@ -795,6 +789,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [user, supabaseUser, demoUser]);
 
+  // Supabase 会话建立后，确保 profiles 行存在
+  // 注册改为「邮件确认」后，signUp 阶段还没有 session，无法写库，
+  // 因此改在会话就绪时补建（已存在则跳过，避免覆盖 role/credits）
+  useEffect(() => {
+    if (!supabase || !supabaseUser) return;
+    const metadata = supabaseUser.user_metadata as { name?: string } | undefined;
+    const profileName = metadata?.name || supabaseUser.email?.split('@')[0] || null;
+
+    (async () => {
+      try {
+        const { data: existing } = await supabase
+          .from('profiles')
+          .select('user_id')
+          .eq('user_id', supabaseUser.id)
+          .maybeSingle();
+        if (existing) return;
+
+        // credits_balance / subscription_tier 由表默认值填充（100 / free）
+        await supabase.from('profiles').insert({
+          user_id: supabaseUser.id,
+          email: supabaseUser.email || '',
+          name: profileName,
+          role: 'user',
+        });
+      } catch {
+        // 写库失败不影响登录
+      }
+    })();
+  }, [supabase, supabaseUser]);
+
   const value: AuthContextType = {
     user,
     accessToken,
@@ -802,6 +826,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     error,
     signIn,
     signUp,
+    resendConfirmation,
     signInWithGoogle,
     signInWithDesktop,
     verifyDesktopToken,

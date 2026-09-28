@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, Suspense, useEffect, useCallback } from 'react'
+import { useState, Suspense, useEffect, useCallback, useRef } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -21,6 +21,7 @@ import {
   KeyRound,
   AlertCircle,
   CheckCircle2,
+  MailCheck,
 } from 'lucide-react'
 import { useAuth } from '@/lib/auth-context'
 import { useLocale } from '@/components/locale-provider'
@@ -76,7 +77,7 @@ function LoginPageContent() {
 
   const { t } = useLocale()
 
-  const { user, accessToken, loading: authLoading, signIn, signUp, signInWithGoogle, signInWithDesktop, clearError } = useAuth()
+  const { user, accessToken, loading: authLoading, signIn, signUp, resendConfirmation, signInWithGoogle, signInWithDesktop, clearError } = useAuth()
 
   // v1.0.31: 桌面端发起的登录流程
   // 桌面端通过 shell.openExternal 打开: /login?mode=desktop&callbackUrl=http://127.0.0.1:port&scheme=podcastai
@@ -103,6 +104,12 @@ function LoginPageContent() {
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
+
+  // 注册流程：info（填写信息）→ sent（等待邮箱确认链接）
+  const [signupStep, setSignupStep] = useState<'info' | 'sent'>('info')
+  const [resendLoading, setResendLoading] = useState(false)
+  const [resendCountdown, setResendCountdown] = useState(0)
+  const resendTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   // Desktop state
   const [desktopLoading, setDesktopLoading] = useState(false)
@@ -202,12 +209,41 @@ function LoginPageContent() {
     router.replace('/')
   }, [user, accessToken, authLoading, router, isDesktopFlow, pushTokenToDesktop])
 
+  // 邮件确认链接回跳（/login?confirmed=1）：提示验证成功
+  // 若客户端已从 URL hash 自动建立会话，上面的重定向会直接进入首页
+  useEffect(() => {
+    if (searchParams.get('confirmed') !== '1') return
+    setSuccess(t('Email verified successfully! Please sign in.', '邮箱验证成功！请登录。'))
+  }, [searchParams, t])
+
+  // 卸载时清理重发倒计时
+  useEffect(() => {
+    return () => {
+      if (resendTimerRef.current) clearInterval(resendTimerRef.current)
+    }
+  }, [])
+
   const clearMessages = () => {
     setError(null)
     setSuccess(null)
     setInfo(null)
     clearError()
   }
+
+  // 重发确认邮件的 60 秒倒计时
+  const startResendCountdown = useCallback(() => {
+    setResendCountdown(60)
+    if (resendTimerRef.current) clearInterval(resendTimerRef.current)
+    resendTimerRef.current = setInterval(() => {
+      setResendCountdown((prev) => {
+        if (prev <= 1) {
+          if (resendTimerRef.current) clearInterval(resendTimerRef.current)
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+  }, [])
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -266,17 +302,13 @@ function LoginPageContent() {
 
     setIsLoading(true)
     try {
-      // Check if email is already registered
+      // 先检查邮箱是否已注册（失败时不阻塞，最终以 signUp 结果为准）
       const checkRes = await fetch('/api/auth/check-email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
       })
       const checkData = (await checkRes.json().catch(() => ({}))) as CheckEmailResponse
-      if (!checkRes.ok) {
-        setError(checkData.error || t('Failed to check email', '检查邮箱失败'))
-        return
-      }
       if (checkData.exists) {
         setError(
           t('This email is already registered. Please sign in.', '该邮箱已注册，请直接登录')
@@ -284,12 +316,26 @@ function LoginPageContent() {
         return
       }
 
-      // 直接注册（邮箱验证已由 Supabase mailer_autoconfirm 处理）
       const result = await signUp(email, password, name.trim())
       if (result.error) {
         setError(result.error)
         return
       }
+
+      // 已开启邮箱确认：注册在用户点击邮件里的确认链接后才算完成
+      if (result.requiresEmailConfirmation) {
+        setSignupStep('sent')
+        startResendCountdown()
+        setInfo(
+          t(
+            `A confirmation email has been sent to ${email}. Click the link inside to finish signing up.`,
+            `确认邮件已发送至 ${email}，请点击邮件中的链接完成邮箱验证。`
+          )
+        )
+        return
+      }
+
+      // Demo 模式（未配置 Supabase）：注册即完成
       // v1.0.31: 桌面端流程，把 token 推送回桌面客户端
       if (isDesktopFlow && result.token) {
         const payload: DesktopAuthPayload = {
@@ -308,6 +354,23 @@ function LoginPageContent() {
       setError(err instanceof Error ? err.message : t('Signup failed', '注册失败'))
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  // 重发邮箱确认邮件
+  const handleResendConfirmation = async () => {
+    clearMessages()
+    setResendLoading(true)
+    try {
+      const result = await resendConfirmation(email)
+      if (result.error) {
+        setError(result.error)
+        return
+      }
+      startResendCountdown()
+      setInfo(t(`Confirmation email resent to ${email}.`, `确认邮件已重新发送至 ${email}。`))
+    } finally {
+      setResendLoading(false)
     }
   }
 
@@ -617,6 +680,63 @@ function LoginPageContent() {
 
             {/* Sign Up Tab */}
             <TabsContent value="signup" className="space-y-4">
+              {signupStep === 'sent' ? (
+                <div className="flex flex-col items-center text-center py-4 space-y-4">
+                  <div className="rounded-full bg-primary/10 p-4">
+                    <MailCheck className="h-10 w-10 text-primary" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <h3 className="text-lg font-semibold">
+                      {t('Verify your email', '请验证你的邮箱')}
+                    </h3>
+                    <p className="text-sm text-muted-foreground">
+                      {t('We sent a confirmation link to', '我们已向以下邮箱发送确认链接')}
+                    </p>
+                    <p className="text-sm font-medium break-all">{email}</p>
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    {t(
+                      'Open the email and click the confirmation link to activate your account. The link is valid for 1 hour.',
+                      '打开邮件并点击确认链接即可完成邮箱验证，链接 1 小时内有效。'
+                    )}
+                  </p>
+                  <Button
+                    type="button"
+                    className="w-full h-11 text-base"
+                    onClick={handleResendConfirmation}
+                    disabled={resendLoading || resendCountdown > 0}
+                  >
+                    {resendLoading ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        {t('Sending...', '发送中...')}
+                      </>
+                    ) : resendCountdown > 0 ? (
+                      t(`Resend in ${resendCountdown}s`, `${resendCountdown} 秒后可重新发送`)
+                    ) : (
+                      t('Resend confirmation email', '重新发送确认邮件')
+                    )}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full h-11 text-base"
+                    onClick={() => {
+                      setSignupStep('info')
+                      clearMessages()
+                    }}
+                  >
+                    {t('Use a different email', '更换邮箱')}
+                  </Button>
+                  <p className="text-xs text-muted-foreground">
+                    {t(
+                      "Can't find the email? Please check your spam folder.",
+                      '没收到邮件？请检查垃圾邮件文件夹。'
+                    )}
+                  </p>
+                </div>
+              ) : (
+              <>
               <form onSubmit={handleSignUp} className="space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor="signup-name">{t('Name', '姓名')}</Label>
@@ -747,6 +867,8 @@ function LoginPageContent() {
                 <GoogleIcon className="h-5 w-5 mr-2" />
                 {t('Continue with Google', '使用 Google 登录')}
               </Button>
+              </>
+              )}
             </TabsContent>
 
             {/* Desktop Tab */}
