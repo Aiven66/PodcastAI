@@ -745,7 +745,7 @@ function LoginPageContent() {
                       disabled={verifyLoading}
                     />
                     <p className="text-xs text-muted-foreground">
-                      {t('The code is valid for 1 hour.', '验证码 1 小时内有效。')}
+                      {t('The code is valid for 10 minutes.', '验证码 10 分钟内有效。')}
                     </p>
                   </div>
                   <Button
