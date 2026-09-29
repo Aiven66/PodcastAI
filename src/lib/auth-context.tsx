@@ -26,7 +26,7 @@ export interface DesktopAuthResult {
 
 export interface SignUpResult {
   error: string | null;
-  /** 需要用户点击邮件中的确认链接完成邮箱验证，之后才能登录 */
+  /** 需要用户输入邮件中的 6 位数字验证码完成邮箱验证，之后才能登录 */
   requiresEmailConfirmation: boolean;
   token?: string | null;
   refreshToken?: string | null;
@@ -40,6 +40,7 @@ export interface AuthContextType {
   error: string | null;
   signIn: (email: string, password: string) => Promise<{ error: string | null; token?: string | null; refreshToken?: string | null; email?: string }>;
   signUp: (email: string, password: string, name: string) => Promise<SignUpResult>;
+  verifySignUpCode: (email: string, code: string) => Promise<{ error: string | null; token?: string | null; refreshToken?: string | null; email?: string }>;
   resendConfirmation: (email: string) => Promise<{ error: string | null }>;
   signInWithGoogle: () => Promise<{ error: string | null }>;
   signInWithDesktop: () => Promise<DesktopAuthResult>;
@@ -598,6 +599,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [supabase]);
 
+  /**
+   * 校验注册邮件里的 6 位数字验证码（Supabase 原生 OTP，type='signup'）
+   * 校验通过后 Supabase 直接下发会话，注册即完成
+   */
+  const verifySignUpCode = useCallback(async (
+    email: string,
+    code: string,
+  ): Promise<{ error: string | null; token?: string | null; refreshToken?: string | null; email?: string }> => {
+    setError(null);
+    if (!supabase) {
+      return { error: 'Verification requires Supabase configuration / 验证码校验需要 Supabase 配置' };
+    }
+    try {
+      const { data, error: verifyError } = await supabase.auth.verifyOtp({
+        email,
+        token: code,
+        type: 'signup',
+      });
+
+      if (verifyError) {
+        return { error: verifyError.message };
+      }
+
+      const session = data.session;
+      if (!session) {
+        return { error: 'Verification succeeded but no session was created / 验证成功但未建立会话' };
+      }
+
+      setAccessToken(session.access_token);
+      return {
+        error: null,
+        token: session.access_token,
+        refreshToken: session.refresh_token,
+        email,
+      };
+    } catch (err) {
+      return {
+        error: err instanceof Error ? err.message : 'Verification failed / 验证码校验失败',
+      };
+    }
+  }, [supabase]);
+
   const resendConfirmation = useCallback(async (email: string) => {
     setError(null);
     if (!supabase) {
@@ -826,6 +869,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     error,
     signIn,
     signUp,
+    verifySignUpCode,
     resendConfirmation,
     signInWithGoogle,
     signInWithDesktop,

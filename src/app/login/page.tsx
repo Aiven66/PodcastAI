@@ -77,7 +77,7 @@ function LoginPageContent() {
 
   const { t } = useLocale()
 
-  const { user, accessToken, loading: authLoading, signIn, signUp, resendConfirmation, signInWithGoogle, signInWithDesktop, clearError } = useAuth()
+  const { user, accessToken, loading: authLoading, signIn, signUp, verifySignUpCode, resendConfirmation, signInWithGoogle, signInWithDesktop, clearError } = useAuth()
 
   // v1.0.31: 桌面端发起的登录流程
   // 桌面端通过 shell.openExternal 打开: /login?mode=desktop&callbackUrl=http://127.0.0.1:port&scheme=podcastai
@@ -105,8 +105,10 @@ function LoginPageContent() {
   const [success, setSuccess] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
 
-  // 注册流程：info（填写信息）→ sent（等待邮箱确认链接）
-  const [signupStep, setSignupStep] = useState<'info' | 'sent'>('info')
+  // 注册流程：info（填写信息）→ verify（输入邮件里的 6 位数字验证码）
+  const [signupStep, setSignupStep] = useState<'info' | 'verify'>('info')
+  const [code, setCode] = useState('')
+  const [verifyLoading, setVerifyLoading] = useState(false)
   const [resendLoading, setResendLoading] = useState(false)
   const [resendCountdown, setResendCountdown] = useState(0)
   const resendTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -208,13 +210,6 @@ function LoginPageContent() {
     }
     router.replace('/')
   }, [user, accessToken, authLoading, router, isDesktopFlow, pushTokenToDesktop])
-
-  // 邮件确认链接回跳（/login?confirmed=1）：提示验证成功
-  // 若客户端已从 URL hash 自动建立会话，上面的重定向会直接进入首页
-  useEffect(() => {
-    if (searchParams.get('confirmed') !== '1') return
-    setSuccess(t('Email verified successfully! Please sign in.', '邮箱验证成功！请登录。'))
-  }, [searchParams, t])
 
   // 卸载时清理重发倒计时
   useEffect(() => {
@@ -322,14 +317,15 @@ function LoginPageContent() {
         return
       }
 
-      // 已开启邮箱确认：注册在用户点击邮件里的确认链接后才算完成
+      // 已开启邮箱确认：需要用户输入邮件里的 6 位数字验证码才算注册完成
       if (result.requiresEmailConfirmation) {
-        setSignupStep('sent')
+        setCode('')
+        setSignupStep('verify')
         startResendCountdown()
         setInfo(
           t(
-            `A confirmation email has been sent to ${email}. Click the link inside to finish signing up.`,
-            `确认邮件已发送至 ${email}，请点击邮件中的链接完成邮箱验证。`
+            `A 6-digit verification code has been sent to ${email}. Enter it below to finish signing up.`,
+            `6 位数字验证码已发送至 ${email}，请输入验证码完成注册。`
           )
         )
         return
@@ -357,7 +353,45 @@ function LoginPageContent() {
     }
   }
 
-  // 重发邮箱确认邮件
+  // 校验 6 位数字验证码，验证通过即完成注册
+  const handleVerifyCode = async (e: React.FormEvent) => {
+    e.preventDefault()
+    clearMessages()
+    if (!/^\d{6}$/.test(code)) {
+      setError(t('Please enter the 6-digit code', '请输入 6 位数字验证码'))
+      return
+    }
+    setVerifyLoading(true)
+    try {
+      const result = await verifySignUpCode(email, code)
+      if (result.error) {
+        setError(result.error)
+        return
+      }
+
+      // v1.0.31: 桌面端流程，把 token 推送回桌面客户端
+      if (isDesktopFlow && result.token) {
+        const payload: DesktopAuthPayload = {
+          token: result.token,
+          refreshToken: result.refreshToken || null,
+          email: result.email || email,
+          userId: null,
+          name: name.trim() || null,
+        }
+        const pushed = await pushTokenToDesktop(payload)
+        if (pushed) return
+      }
+
+      setSuccess(t('Email verified! Account created.', '邮箱验证成功，注册已完成！'))
+      router.push('/')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('Verification failed', '验证失败'))
+    } finally {
+      setVerifyLoading(false)
+    }
+  }
+
+  // 重发 6 位数字验证码
   const handleResendConfirmation = async () => {
     clearMessages()
     setResendLoading(true)
@@ -368,7 +402,7 @@ function LoginPageContent() {
         return
       }
       startResendCountdown()
-      setInfo(t(`Confirmation email resent to ${email}.`, `确认邮件已重新发送至 ${email}。`))
+      setInfo(t(`A new 6-digit code has been sent to ${email}.`, `新的 6 位验证码已发送至 ${email}。`))
     } finally {
       setResendLoading(false)
     }
@@ -680,28 +714,57 @@ function LoginPageContent() {
 
             {/* Sign Up Tab */}
             <TabsContent value="signup" className="space-y-4">
-              {signupStep === 'sent' ? (
-                <div className="flex flex-col items-center text-center py-4 space-y-4">
-                  <div className="rounded-full bg-primary/10 p-4">
-                    <MailCheck className="h-10 w-10 text-primary" />
+              {signupStep === 'verify' ? (
+                <form onSubmit={handleVerifyCode} className="space-y-4">
+                  <div className="flex flex-col items-center text-center py-2 space-y-3">
+                    <div className="rounded-full bg-primary/10 p-4">
+                      <MailCheck className="h-10 w-10 text-primary" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <h3 className="text-lg font-semibold">
+                        {t('Enter verification code', '请输入验证码')}
+                      </h3>
+                      <p className="text-sm text-muted-foreground">
+                        {t('We sent a 6-digit code to', '我们已向以下邮箱发送 6 位数字验证码')}
+                      </p>
+                      <p className="text-sm font-medium break-all">{email}</p>
+                    </div>
                   </div>
-                  <div className="space-y-1.5">
-                    <h3 className="text-lg font-semibold">
-                      {t('Verify your email', '请验证你的邮箱')}
-                    </h3>
-                    <p className="text-sm text-muted-foreground">
-                      {t('We sent a confirmation link to', '我们已向以下邮箱发送确认链接')}
+                  <div className="space-y-2">
+                    <Label htmlFor="signup-code">{t('Verification Code', '验证码')}</Label>
+                    <Input
+                      id="signup-code"
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      maxLength={6}
+                      placeholder="000000"
+                      value={code}
+                      onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      className="h-12 text-center text-2xl tracking-[0.5em] font-mono"
+                      disabled={verifyLoading}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      {t('The code is valid for 1 hour.', '验证码 1 小时内有效。')}
                     </p>
-                    <p className="text-sm font-medium break-all">{email}</p>
                   </div>
-                  <p className="text-sm text-muted-foreground">
-                    {t(
-                      'Open the email and click the confirmation link to activate your account. The link is valid for 1 hour.',
-                      '打开邮件并点击确认链接即可完成邮箱验证，链接 1 小时内有效。'
+                  <Button
+                    type="submit"
+                    className="w-full h-11 text-base"
+                    disabled={verifyLoading || code.length !== 6}
+                  >
+                    {verifyLoading ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        {t('Verifying...', '验证中...')}
+                      </>
+                    ) : (
+                      t('Verify and Create Account', '验证并完成注册')
                     )}
-                  </p>
+                  </Button>
                   <Button
                     type="button"
+                    variant="outline"
                     className="w-full h-11 text-base"
                     onClick={handleResendConfirmation}
                     disabled={resendLoading || resendCountdown > 0}
@@ -714,27 +777,28 @@ function LoginPageContent() {
                     ) : resendCountdown > 0 ? (
                       t(`Resend in ${resendCountdown}s`, `${resendCountdown} 秒后可重新发送`)
                     ) : (
-                      t('Resend confirmation email', '重新发送确认邮件')
+                      t('Resend code', '重新发送验证码')
                     )}
                   </Button>
                   <Button
                     type="button"
-                    variant="outline"
-                    className="w-full h-11 text-base"
+                    variant="ghost"
+                    className="w-full"
                     onClick={() => {
                       setSignupStep('info')
+                      setCode('')
                       clearMessages()
                     }}
                   >
                     {t('Use a different email', '更换邮箱')}
                   </Button>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-xs text-muted-foreground text-center">
                     {t(
                       "Can't find the email? Please check your spam folder.",
                       '没收到邮件？请检查垃圾邮件文件夹。'
                     )}
                   </p>
-                </div>
+                </form>
               ) : (
               <>
               <form onSubmit={handleSignUp} className="space-y-4">
