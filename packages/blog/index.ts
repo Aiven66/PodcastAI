@@ -19,6 +19,8 @@ export {
   publishHtmlBlog,
   uploadBlogCover,
   translateBlogPost as translatePost,
+  autoCategorizeBlogPost,
+  autoCategorizeAllBlogPosts,
   type BlogPostListResponse,
   type BlogPostDetailResponse,
   type CreateBlogPostInput,
@@ -26,6 +28,8 @@ export {
   type SaveTranslationInput,
   type CoverUploadResult,
   type TranslatePostResult,
+  type AutoCategoryResult,
+  type AutoCategorizeAllResult,
 } from './client';
 
 export {

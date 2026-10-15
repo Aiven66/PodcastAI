@@ -61,6 +61,15 @@ export interface TranslatePostResult {
   results: Array<{ locale: string; success: boolean; error?: string }>;
 }
 
+export interface AutoCategoryResult {
+  category: string;
+}
+
+export interface AutoCategorizeAllResult {
+  updated: number;
+  total: number;
+}
+
 function authHeaders(token?: string | null): HeadersInit {
   if (!token) return { ...JSON_HEADERS };
   return { ...JSON_HEADERS, Authorization: `Bearer ${token}` };
@@ -316,6 +325,45 @@ export async function translateBlogPost(
     locales: successes.map((r) => r.locale),
     results: data.results || [],
   };
+}
+
+/**
+ * Suggest a category for a single post based on its content (LLM-first with
+ * keyword fallback on the server). Does not persist anything.
+ *
+ * Calls: POST /api/blog/auto-category { mode: 'single', title?, content }
+ */
+export async function autoCategorizeBlogPost(
+  _config: AppConfig,
+  payload: { title?: string; content: string },
+  token: string,
+): Promise<AutoCategoryResult> {
+  const res = await fetch('/api/blog/auto-category', {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ mode: 'single', ...payload }),
+  });
+  if (!res.ok) await handleJsonError(res);
+  return (await res.json()) as AutoCategoryResult;
+}
+
+/**
+ * Backfill categories for all posts that are missing one (admin only).
+ * Posts with a manually-set category are left untouched.
+ *
+ * Calls: POST /api/blog/auto-category { mode: 'all' }
+ */
+export async function autoCategorizeAllBlogPosts(
+  _config: AppConfig,
+  token: string,
+): Promise<AutoCategorizeAllResult> {
+  const res = await fetch('/api/blog/auto-category', {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ mode: 'all' }),
+  });
+  if (!res.ok) await handleJsonError(res);
+  return (await res.json()) as AutoCategorizeAllResult;
 }
 
 // Used by the unused import warning suppression in some bundlers.
