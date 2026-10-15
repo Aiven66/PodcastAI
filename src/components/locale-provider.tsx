@@ -3,7 +3,6 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
 import {
   isSupportedLocale,
-  detectBrowserLocale,
   translate,
   LOCALE_META,
   type Locale,
@@ -15,10 +14,12 @@ interface LocaleContextType {
   t: (en: string, zh: string) => string
 }
 
+const DEFAULT_LOCALE: Locale = 'zh'
+
 const LocaleContext = createContext<LocaleContextType>({
-  locale: 'en',
+  locale: DEFAULT_LOCALE,
   setLocale: () => {},
-  t: (en: string) => en
+  t: (_en: string, zh: string) => zh
 })
 
 export function useLocale() {
@@ -28,17 +29,14 @@ export function useLocale() {
 const LOCALE_STORAGE_KEY = 'locale'
 
 export function LocaleProvider({ children }: { children: ReactNode }) {
-  const [locale, setLocale] = useState<Locale>('en')
+  const [locale, setLocale] = useState<Locale>(DEFAULT_LOCALE)
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
-    // 优先级：用户手动选择 > 浏览器语言 > 英文
+    // 优先级：用户手动选择 > 默认中文
     const saved = localStorage.getItem(LOCALE_STORAGE_KEY)
     if (isSupportedLocale(saved)) {
       setLocale(saved)
-    } else {
-      const detected = detectBrowserLocale()
-      if (detected) setLocale(detected)
     }
     setMounted(true)
   }, [])
@@ -65,7 +63,7 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
   // Prevent hydration mismatch by not rendering until mounted
   if (!mounted) {
     return (
-      <LocaleContext.Provider value={{ locale: 'en', setLocale: handleSetLocale, t }}>
+      <LocaleContext.Provider value={{ locale: DEFAULT_LOCALE, setLocale: handleSetLocale, t }}>
         {children}
       </LocaleContext.Provider>
     )
