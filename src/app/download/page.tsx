@@ -41,18 +41,18 @@ const RELEASE_ASSETS: ReleaseAsset[] = [
     size: '暂未构建',
     version: '1.0.78',
   },
-  // Windows x64 - NSIS 安装包（单文件，运行时与模型安装后自动下载）
+  // Windows x64 - NSIS 安装包（单文件 131MB，Python 运行时与模型安装后自动下载）
   {
     name: 'PodcastAI.Setup-1.0.78-x64.exe',
     platform: 'windows',
     arch: 'x64',
     url: `${GITHUB_RELEASE_BASE}/PodcastAI.Setup-1.0.78-x64.exe`,
-    size: '约 250 MB',
+    size: '约 131 MB',
     version: '1.0.78',
   },
 ]
 
-// Windows x64 客户端已可用（v1.0.78）
+// Windows x64 客户端已可用（v1.0.78，安装包 + 运行时归档均已上传 release）
 const WINDOWS_AVAILABLE = true
 
 export default function DownloadPage() {
