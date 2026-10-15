@@ -1,0 +1,42 @@
+# 声音朗读 + 声音克隆服务（docker compose 一键启动）
+# 用法：
+#   CPU 模式（系统音色朗读可用，克隆受限）：docker compose up -d --build
+#   GPU 模式（启用 CosyVoice2 高质量克隆）：见下方 `## GPU 模式` 注释，放开后执行
+#
+# 部署到服务器后，建议在前面加一层 HTTPS 反向代理（Caddy/Nginx）暴露 8900 端口，
+# 并在环境变量中设置 VOICE_SERVICE_API_KEY 开启鉴权。
+
+services:
+  voice-service:
+    build: .
+    image: podcastai-voice-service:latest
+    container_name: voice-service
+    restart: unless-stopped
+    environment:
+      # 对外端口（供 Caddy/Nginx 代理或直接访问）
+      VOICE_SERVICE_PORT: "8900"
+      # 数据目录（克隆库、输出音频），与下面 volume 对应
+      VOICE_DATA_DIR: "/data"
+      # ⚠️ 生产部署务必设置 API Key；未设置则接口不鉴权
+      VOICE_SERVICE_API_KEY: "${VOICE_SERVICE_API_KEY:-}"
+      # CosyVoice2 / IndexTTS2 模型目录（GPU 高质量克隆时挂载到容器内）
+      COSYVOICE_MODEL_DIR: "${COSYVOICE_MODEL_DIR:-}"
+    volumes:
+      # 克隆库与输出持久化：宿主机 ./voice-data -> 容器 /data
+      - ./voice-data:/data
+    ports:
+      - "8900:8900"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8900/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    # ## GPU 模式（需要 Nvidia 驱动 + nvidia-container-toolkit + CUDA 版镜像）
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]

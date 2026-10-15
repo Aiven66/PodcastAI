@@ -50,7 +50,7 @@ os.environ['PATH'] = _cur_path
 import numpy as np
 import soundfile as sf
 from scipy.signal import resample as scipy_resample
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Header, Depends
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -143,6 +143,45 @@ EDGE_VOICES = {
     "male": ["zh-CN-YunxiNeural", "zh-CN-YunjianNeural", "zh-CN-YunyangNeural"],
 }
 _UNAVAILABLE_VOICES = {"zh-CN-XiaohanNeural", "zh-CN-XiaomengNeural", "zh-CN-YunhaoNeural"}
+
+# ─── 系统音色 → Edge TTS 声音映射（全局常量） ───
+# 供 iOS / 网页的「系统音色朗读」接口与 /voices 清单复用；克隆朗读走 _clone_store。
+SYSTEM_VOICE_TO_EDGE = {
+    # 中文声音
+    "female-professional": "zh-CN-XiaoxiaoNeural",
+    "female-friendly":     "zh-CN-XiaoyiNeural",
+    "female-northeast":    "zh-CN-liaoning-XiaobeiNeural",
+    "female-shaanxi":      "zh-CN-shaanxi-XiaoniNeural",
+    "male-narrator":       "zh-CN-YunxiNeural",
+    "male-deep":           "zh-CN-YunjianNeural",
+    "male-sunny":          "zh-CN-YunyangNeural",
+    "male-youth":          "zh-CN-YunxiaNeural",
+    # 英文声音（海外）
+    "en-female-jenny":     "en-US-JennyNeural",
+    "en-female-ariana":    "en-US-AriaNeural",
+    "en-female-sarah":     "en-GB-SoniaNeural",
+    "en-male-guy":         "en-US-GuyNeural",
+    "en-male-ryan":        "en-US-RyanNeural",
+    "en-male-james":       "en-GB-RyanNeural",
+}
+
+# 供 /voices 接口展示的系统音色元数据（id -> 展示名/性别/语言）
+SYSTEM_VOICE_META = {
+    "female-professional": {"name": "专业女声", "gender": "Female", "language": "zh-CN"},
+    "female-friendly":     {"name": "甜美女声", "gender": "Female", "language": "zh-CN"},
+    "female-northeast":    {"name": "东北女声", "gender": "Female", "language": "zh-CN"},
+    "female-shaanxi":      {"name": "陕西女声", "gender": "Female", "language": "zh-CN"},
+    "male-narrator":       {"name": "电台男声", "gender": "Male", "language": "zh-CN"},
+    "male-deep":           {"name": "沉稳男声", "gender": "Male", "language": "zh-CN"},
+    "male-sunny":          {"name": "阳光男声", "gender": "Male", "language": "zh-CN"},
+    "male-youth":          {"name": "青年男声", "gender": "Male", "language": "zh-CN"},
+    "en-female-jenny":     {"name": "Jenny", "gender": "Female", "language": "en-US"},
+    "en-female-ariana":    {"name": "Aria", "gender": "Female", "language": "en-US"},
+    "en-female-sarah":     {"name": "Sonia", "gender": "Female", "language": "en-GB"},
+    "en-male-guy":         {"name": "Guy", "gender": "Male", "language": "en-US"},
+    "en-male-ryan":        {"name": "Ryan", "gender": "Male", "language": "en-US"},
+    "en-male-james":       {"name": "Ryan(UK)", "gender": "Male", "language": "en-GB"},
+}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -3335,6 +3374,32 @@ app.add_middleware(
 # 静态文件：output 目录（播客合成输出）
 app.mount("/output", StaticFiles(directory=str(OUTPUT_DIR)), name="output")
 
+# ==================== 鉴权 ====================
+
+# API Key 鉴权：仅当设置环境变量 VOICE_SERVICE_API_KEY 时启用。
+# 未设置则全部放行（本地开发 / 内网自用）。返回 FastAPI 依赖，可直接作为各路由的依赖注入。
+_API_KEY = os.environ.get("VOICE_SERVICE_API_KEY", "").strip()
+
+def _api_key_ok(header_value: str) -> bool:
+    if not _API_KEY:
+        return True
+    if not header_value:
+        return False
+    if header_value == _API_KEY:
+        return True
+    if header_value.startswith("Bearer "):
+        return header_value[len("Bearer "):].strip() == _API_KEY
+    return False
+
+def require_api_key(
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+    authorization: Optional[str] = Header(None),
+):
+    """若已配置 VOICE_SERVICE_API_KEY，则要求请求携带 x-api-key 或 Authorization: Bearer <key>。"""
+    if _API_KEY and not (_api_key_ok(x_api_key or "") or _api_key_ok(authorization or "")):
+        raise HTTPException(status_code=401, detail="Missing or invalid API key")
+
+
 # ==================== API 路由 ====================
 
 @app.get("/models/status")
@@ -3461,7 +3526,7 @@ def _get_preview_text(ref_text: str = "") -> str:
     return PREVIEW_TEXTS.get(lang, PREVIEW_TEXTS["zh"])
 
 
-@app.post("/clone")
+@app.post("/clone", dependencies=[Depends(require_api_key)])
 async def create_clone(
     name: str = Form(...),
     gender: str = Form("female"),
@@ -3578,7 +3643,7 @@ async def create_clone(
     return clone_data
 
 
-@app.get("/clones")
+@app.get("/clones", dependencies=[Depends(require_api_key)])
 async def list_clones():
     return list(_clone_store.values())
 
@@ -3645,7 +3710,7 @@ def _generate_preview_background(clone_id: str):
             _preview_task_store[clone_id] = {"status": "failed", "started_at": time.time(), "error": str(e)}
 
 
-@app.get("/preview/{clone_id}")
+@app.get("/preview/{clone_id}", dependencies=[Depends(require_api_key)])
 async def get_clone_preview(clone_id: str, force: int = 0):
     clone = _clone_store.get(clone_id)
     if not clone:
@@ -3709,27 +3774,8 @@ async def get_clone_preview(clone_id: str, force: int = 0):
     )
 
 
-@app.get("/system-voice-preview/{voice_id}")
+@app.get("/system-voice-preview/{voice_id}", dependencies=[Depends(require_api_key)])
 async def get_system_voice_preview(voice_id: str):
-    SYSTEM_VOICE_TO_EDGE = {
-        # 中文声音
-        "female-professional": "zh-CN-XiaoxiaoNeural",
-        "female-friendly":    "zh-CN-XiaoyiNeural",
-        "female-northeast":   "zh-CN-liaoning-XiaobeiNeural",
-        "female-shaanxi":     "zh-CN-shaanxi-XiaoniNeural",
-        "male-narrator":      "zh-CN-YunxiNeural",
-        "male-deep":          "zh-CN-YunjianNeural",
-        "male-sunny":         "zh-CN-YunyangNeural",
-        "male-youth":         "zh-CN-YunxiaNeural",
-        # 英文声音（海外）
-        "en-female-jenny":    "en-US-JennyNeural",
-        "en-female-ariana":   "en-US-AriaNeural",
-        "en-female-sarah":    "en-GB-SoniaNeural",
-        "en-male-guy":        "en-US-GuyNeural",
-        "en-male-ryan":       "en-US-RyanNeural",
-        "en-male-james":      "en-GB-RyanNeural",
-    }
-
     edge_voice = SYSTEM_VOICE_TO_EDGE.get(voice_id)
     if not edge_voice:
         raise HTTPException(status_code=404, detail=f"System voice '{voice_id}' not found")
@@ -3783,7 +3829,7 @@ async def get_system_voice_preview(voice_id: str):
     raise HTTPException(status_code=500, detail="Failed to generate system voice preview")
 
 
-@app.post("/synthesize")
+@app.post("/synthesize", dependencies=[Depends(require_api_key)])
 async def synthesize(
     text: str = Form(...),
     clone_id: str = Form(""),
@@ -3823,7 +3869,74 @@ async def synthesize(
     raise HTTPException(status_code=500, detail="Synthesis failed")
 
 
-@app.post("/synthesize-podcast")
+@app.get("/voices")
+async def list_voices():
+    """返回可用的系统音色清单，供 iOS「旁白音色选择」UI 使用。"""
+    voices = []
+    for vid, edge in SYSTEM_VOICE_TO_EDGE.items():
+        meta = SYSTEM_VOICE_META.get(vid, {})
+        voices.append({
+            "id": vid,
+            "name": meta.get("name", vid),
+            "gender": meta.get("gender", "Female"),
+            "language": meta.get("language", "zh-CN"),
+            "edge_voice": edge,
+            "type": "system",
+        })
+    return {"voices": voices}
+
+
+@app.post("/tts", dependencies=[Depends(require_api_key)])
+async def tts(
+    text: str = Form(...),
+    voice_id: str = Form(""),
+    speed: float = Form(1.0),
+):
+    """单段朗读合成：可按系统音色（female-friendly 等）或克隆音色（clone:<id>）合成 WAV。
+    - voice_id 为空 -> 默认系统女声专业音色。
+    - voice_id 命中系统音色映射 -> edge-tts 朗读。
+    - voice_id 为 clone:<id> / clone-<id> / 直接克隆 id -> 使用克隆音色。
+    """
+    if not text or not text.strip():
+        raise HTTPException(status_code=400, detail="text is required")
+
+    def _resolve_clone(vid: str):
+        raw = vid
+        for prefix in ("clone:", "clone-"):
+            if raw.lower().startswith(prefix):
+                return _clone_store.get(raw[len(prefix):])
+        return _clone_store.get(raw)
+
+    output_id = str(uuid.uuid4())
+    output_path = str(OUTPUT_DIR / f"tts_{output_id}.wav")
+
+    clone = _resolve_clone(voice_id) if voice_id else None
+    edge_voice = SYSTEM_VOICE_TO_EDGE.get(voice_id) if voice_id else None
+
+    success = False
+    engine = ""
+    if clone:
+        meta = dict(clone)
+        meta["ref_audio"] = clone.get("ref_audio", "")
+        meta["ref_text"] = clone.get("ref_text", "")
+        success = synthesize_audio(text, output_path, meta, strict_clone=True, speed=speed)
+        engine = "clone"
+    else:
+        edge_voice = edge_voice or SYSTEM_VOICE_TO_EDGE.get("female-professional", "zh-CN-XiaoxiaoNeural")
+        success = synthesize_with_edge_tts(text, edge_voice, output_path, max_retries=3)
+        engine = "edge-tts"
+
+    if success and os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+        return FileResponse(
+            output_path,
+            media_type="audio/wav",
+            filename=f"tts_{output_id}.wav",
+            headers={"X-Engine": engine},
+        )
+    raise HTTPException(status_code=500, detail="Synthesis failed")
+
+
+@app.post("/synthesize-podcast", dependencies=[Depends(require_api_key)])
 async def synthesize_podcast(
     script: str = Form(...),
     clone_ids: str = Form("[]"),
@@ -3834,25 +3947,6 @@ async def synthesize_podcast(
     import re
     import random
     import shutil
-
-    SYSTEM_VOICE_TO_EDGE = {
-        # 中文声音
-        "female-professional": "zh-CN-XiaoxiaoNeural",
-        "female-friendly":    "zh-CN-XiaoyiNeural",
-        "female-northeast":   "zh-CN-liaoning-XiaobeiNeural",
-        "female-shaanxi":     "zh-CN-shaanxi-XiaoniNeural",
-        "male-narrator":      "zh-CN-YunxiNeural",
-        "male-deep":          "zh-CN-YunjianNeural",
-        "male-sunny":         "zh-CN-YunyangNeural",
-        "male-youth":         "zh-CN-YunxiaNeural",
-        # 英文声音（海外）
-        "en-female-jenny":    "en-US-JennyNeural",
-        "en-female-ariana":   "en-US-AriaNeural",
-        "en-female-sarah":    "en-GB-SoniaNeural",
-        "en-male-guy":        "en-US-GuyNeural",
-        "en-male-ryan":       "en-US-RyanNeural",
-        "en-male-james":      "en-GB-RyanNeural",
-    }
 
     clone_id_list = json.loads(clone_ids) if isinstance(clone_ids, str) else clone_ids
 
