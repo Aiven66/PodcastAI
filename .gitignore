@@ -184,3 +184,13 @@ tsconfig.tsbuildinfo
 
 # Supabase 临时文件
 supabase/.temp/
+
+# 本地临时产物（调试脚本、截图、IDE/代理目录，不入 git）
+/.trae/
+/app_extracted/
+/.next 2/
+/test_screenshots/
+/cdp_test.js
+/desktop_screenshot.png
+/test_*.py
+/test_*.wav
